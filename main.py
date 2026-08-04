@@ -1,4 +1,14 @@
 import sys
+import os
+
+# สำคัญ: ตอนเป็น .exe แบบ windowed จะไม่มี console → sys.stdout/stderr เป็น None
+# ทำให้ไลบรารีที่เรียก sys.stdout.isatty() (เช่น uvicorn logging) พัง แล้วเซิร์ฟเวอร์ไม่สตาร์ท
+# ต้องคืนค่าให้เป็นสตรีมจริงก่อน import อย่างอื่น
+if sys.stdout is None:
+	sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+	sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
 import time
 import socket
 from PySide6.QtWidgets import QApplication, QMessageBox

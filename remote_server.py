@@ -417,7 +417,8 @@ def run_server(port=8000):
 		loop = asyncio.new_event_loop()
 		asyncio.set_event_loop(loop)
 
-		config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="error", loop="asyncio")
+		# log_config=None: ไม่ให้ uvicorn ตั้งค่า logging (กันพังจาก sys.stdout เป็น None ในโหมด windowed)
+		config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="error", loop="asyncio", log_config=None)
 		server = uvicorn.Server(config)
 		server.install_signal_handlers = lambda: None
 		loop.run_until_complete(server.serve())
