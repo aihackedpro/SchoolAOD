@@ -49,7 +49,8 @@ class TunnelManager(QObject):
 		try:
 			self.status_changed.emit("connecting")
 			self.process = subprocess.Popen(
-				[self._bin, "tunnel", "--url", f"http://localhost:{self.port}", "--no-autoupdate"],
+				# ใช้ 127.0.0.1 (IPv4) ไม่ใช่ localhost — กันปัญหาบน Windows ที่ localhost ชี้ไป IPv6 (::1) แล้วเซิร์ฟเวอร์ไม่ตอบ = 502
+				[self._bin, "tunnel", "--url", f"http://127.0.0.1:{self.port}", "--no-autoupdate"],
 				stdout=subprocess.PIPE,
 				stderr=subprocess.STDOUT,
 				text=True,

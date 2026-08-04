@@ -146,6 +146,28 @@ QMessageBox QLabel, QDialog QLabel {{
 	font-size: 15px;
 	font-weight: bold;
 }}
+
+/* เมนู (รวมเมนูคลิกขวาที่ System Tray) — กำหนดพื้น/อักษรให้อ่านออกทุกธีม */
+QMenu {{
+	background-color: {p['dialog_bg']};
+	color: {p['dialog_text']};
+	border: 1px solid {p['border']};
+	padding: 4px;
+}}
+QMenu::item {{
+	padding: 8px 22px;
+	background: transparent;
+}}
+QMenu::item:selected {{
+	background-color: {p['accent']};
+	color: {p['on_accent']};
+	border-radius: 6px;
+}}
+QMenu::separator {{
+	height: 1px;
+	background: {p['border']};
+	margin: 4px 8px;
+}}
 """
 
 
