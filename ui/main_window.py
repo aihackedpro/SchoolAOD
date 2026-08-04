@@ -15,6 +15,7 @@ from ui.schedule_dialog import ScheduleFormDialog, parse_hms
 from sound_db import SoundDatabase
 from config_manager import load_config, save_config
 from remote_server import set_allow_voice
+from win_system import prevent_sleep
 from paths import resource_path
 
 
@@ -113,12 +114,14 @@ class BellTriggerDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-	def __init__(self, audio_engine, scheduler_engine, pin_code, remote_url, tunnel=None):
+	def __init__(self, audio_engine, scheduler_engine, pin_code, lan_url, public_url="", tunnel=None):
 		super().__init__()
 		self.audio = audio_engine
 		self.scheduler = scheduler_engine
 		self.pin_code = pin_code
-		self.remote_url = remote_url
+		self.lan_url = lan_url
+		self.public_url = public_url          # โดเมนสาธารณะ (ว่าง = ยังไม่มี/รอ tunnel)
+		self.remote_url = public_url or lan_url
 		self.tunnel = tunnel
 		self.active_alert_dialog = None
 
@@ -188,25 +191,37 @@ class MainWindow(QMainWindow):
 		self.timer.timeout.connect(self.update_dashboard_clock)
 		self.timer.start(1000)
 
+		# ย้ำคำสั่งกันเครื่องหลับเป็นระยะ (เผื่อ Windows รีเซ็ตสถานะพลังงาน)
+		self.keepawake_timer = QTimer(self)
+		self.keepawake_timer.timeout.connect(prevent_sleep)
+		self.keepawake_timer.start(240000)  # ทุก 4 นาที
+
 		# เมื่อ Cloudflare Tunnel สร้างลิงก์สาธารณะเสร็จ ให้อัปเดตลิงก์ในหน้าจอทันที
 		if self.tunnel:
 			self.tunnel.url_ready.connect(self.on_public_url_ready)
 			self.tunnel.status_changed.connect(self.on_tunnel_status)
 
 	def on_public_url_ready(self, public_url):
+		self.public_url = public_url
 		self.remote_url = public_url
-		self.lbl_url.setText(f"🌐 ลิงก์สาธารณะ (ใช้ได้ทุกที่): {public_url}")
+		self.lbl_public_url.setText(public_url)
+		self.btn_copy_public.setEnabled(True)
 		self.tray_icon.showMessage(
 			"ลิงก์รีโมทพร้อมใช้งาน",
-			f"สร้างลิงก์สาธารณะสำเร็จ:\n{public_url}",
+			f"สร้างโดเมนสาธารณะสำเร็จ:\n{public_url}",
 			QSystemTrayIcon.Information,
 			5000
 		)
 
 	def on_tunnel_status(self, status):
 		if status in ("no-tool", "error"):
-			# กลับไปแสดง IP ในวง LAN ถ้าสร้างลิงก์สาธารณะไม่ได้
-			self.lbl_url.setText(f"🌐 ลิงก์เชื่อมต่อ (เฉพาะวง LAN): {self.remote_url}")
+			# สร้างลิงก์สาธารณะไม่ได้ → แจ้งให้ใช้ไอพีวง LAN แทน
+			self.lbl_public_url.setText("— (สร้างลิงก์สาธารณะไม่สำเร็จ ใช้ไอพีวง LAN แทน)")
+
+	def copy_text(self, text):
+		if text:
+			QGuiApplication.clipboard().setText(text)
+			self.toast.show_toast()
 
 	def setup_system_tray(self):
 		self.tray_icon = QSystemTrayIcon(self)
@@ -336,7 +351,7 @@ class MainWindow(QMainWindow):
 		self.lbl_next_bell.setAlignment(Qt.AlignCenter)
 		self.lbl_next_bell.setProperty("class", "accent-amber")
 
-		self.lbl_status = QLabel("🟢 สถานะระบบ: พร้อมทำงานเต็มรูปแบบ 24 ชม.")
+		self.lbl_status = QLabel("🟢 สถานะระบบ: พร้อมทำงาน 24 ชม. (กันเครื่องหลับอัตโนมัติ)")
 		self.lbl_status.setAlignment(Qt.AlignCenter)
 		self.lbl_status.setProperty("class", "accent-green")
 
@@ -367,27 +382,41 @@ class MainWindow(QMainWindow):
 		row_pin.addWidget(lbl_pin)
 		row_pin.addWidget(btn_copy_pin)
 
-		initial_url = self.remote_url
-		if self.tunnel:
-			initial_url = f"{self.remote_url}  (กำลังสร้างลิงก์สาธารณะ HTTPS อัตโนมัติ...)"
-		self.lbl_url = QLabel(f"🌐 ลิงก์เชื่อมต่อ: {initial_url}")
-		self.lbl_url.setAlignment(Qt.AlignCenter)
-		self.lbl_url.setProperty("class", "muted")
-		self.lbl_url.setWordWrap(True)
+		# ---- ลิงก์เชื่อมต่อ 2 แบบ: ไอพีในวง LAN และ โดเมนสาธารณะ (แต่ละแบบมีปุ่มคัดลอกของตัวเอง) ----
+		def make_link_row(desc, url_text, url_class="accent-green"):
+			row = QHBoxLayout()
+			row.setAlignment(Qt.AlignCenter)
+			lbl_desc = QLabel(desc)
+			lbl_desc.setProperty("class", "muted")
+			lbl_val = QLabel(url_text)
+			lbl_val.setProperty("class", url_class)
+			lbl_val.setTextInteractionFlags(Qt.TextSelectableByMouse)
+			lbl_val.setWordWrap(True)
+			btn = QPushButton("📋 คัดลอก")
+			btn.setProperty("class", "secondary-btn")
+			row.addWidget(lbl_desc)
+			row.addWidget(lbl_val, 1)
+			row.addWidget(btn)
+			return row, lbl_val, btn
 
-		btn_row = QHBoxLayout()
-		btn_row.setAlignment(Qt.AlignCenter)
-		
-		btn_copy_link = QPushButton("📋 คัดลอกลิงก์ Remote")
-		btn_copy_link.setProperty("class", "secondary-btn")
-		btn_copy_link.clicked.connect(self.copy_remote_link)
+		# แถวที่ 1: ไอพีในวง LAN (สำหรับเข้าจากเครื่องในวงเดียวกัน)
+		lan_row, self.lbl_lan_url, btn_copy_lan = make_link_row("🌐 ไอพีในวง LAN:", self.lan_url, "accent-green")
+		btn_copy_lan.clicked.connect(lambda: self.copy_text(self.lan_url))
+
+		# แถวที่ 2: โดเมนสาธารณะ (สำหรับเข้าจากที่ไหนก็ได้)
+		if self.public_url:
+			pub_text = self.public_url
+		elif self.tunnel:
+			pub_text = "⏳ กำลังสร้างลิงก์สาธารณะ HTTPS..."
+		else:
+			pub_text = "— (ไม่ได้เปิดใช้ลิงก์สาธารณะ)"
+		pub_row, self.lbl_public_url, self.btn_copy_public = make_link_row("🌍 โดเมนสาธารณะ:", pub_text, "accent-amber")
+		self.btn_copy_public.clicked.connect(lambda: self.copy_text(self.public_url))
+		self.btn_copy_public.setEnabled(bool(self.public_url))
 
 		btn_open = QPushButton("🌐 เปิดลิงก์ในเบราว์เซอร์")
 		btn_open.setProperty("class", "secondary-btn")
-		btn_open.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self.remote_url)))
-
-		btn_row.addWidget(btn_copy_link)
-		btn_row.addWidget(btn_open)
+		btn_open.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self.public_url or self.lan_url)))
 
 		voice_perm_row = QHBoxLayout()
 		voice_perm_row.setAlignment(Qt.AlignCenter)
@@ -400,8 +429,9 @@ class MainWindow(QMainWindow):
 
 		remote_layout.addWidget(lbl_remote_title)
 		remote_layout.addLayout(row_pin)
-		remote_layout.addWidget(self.lbl_url)
-		remote_layout.addLayout(btn_row)
+		remote_layout.addLayout(lan_row)
+		remote_layout.addLayout(pub_row)
+		remote_layout.addWidget(btn_open, alignment=Qt.AlignCenter)
 		remote_layout.addLayout(voice_perm_row)
 		remote_card.setLayout(remote_layout)
 

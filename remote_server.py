@@ -413,11 +413,11 @@ def start_remote_server_async(audio_engine, scheduler_engine, port=8000):
 	local_ip = get_local_ip()
 	lan_url = f"http://{local_ip}:{port}"
 
-	# ถ้าตั้งโดเมนถาวรไว้ใน config จะใช้โดเมนนั้นเป็นลิงก์หลัก (ฝังไว้ใช้ได้ตลอด)
+	# ถ้าตั้งโดเมนถาวรไว้ใน config จะใช้เป็นลิงก์สาธารณะ (ฝังไว้ใช้ได้ตลอด)
 	domain = (CONFIG.get("remote_domain") or "").strip()
-	display_url = domain if domain else lan_url
 
 	print(f"[Remote] LAN URL : {lan_url}")
 	if domain:
 		print(f"[Remote] Domain  : {domain}")
-	return REMOTE_PIN, display_url
+	# คืนค่า: PIN, ลิงก์วง LAN, ลิงก์สาธารณะ (ว่าง = จะได้จาก Cloudflare Tunnel ทีหลัง)
+	return REMOTE_PIN, lan_url, domain
