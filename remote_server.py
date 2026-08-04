@@ -1,14 +1,16 @@
 import os
+import sys
 import json
 import socket
 import threading
+import traceback
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response, JSONResponse
 import uvicorn
 from win_system import config_windows_firewall
 from config_manager import load_config
-from paths import resource_path
+from paths import resource_path, data_path
 
 app = FastAPI(title="School AOD Remote Dashboard")
 
@@ -399,16 +401,34 @@ async def ws_live_voice(websocket: WebSocket):
 			GLOBAL_AUDIO_ENGINE.live_stream_stopped.emit()
 
 def run_server(port=8000):
-	config_windows_firewall(port)
-	# รัน uvicorn ในเธรดเบื้องหลัง: ต้องปิดการติดตั้ง signal handler
-	# มิฉะนั้นบน Windows จะโยน error (signal ใช้ได้เฉพาะ main thread) แล้วเซิร์ฟเวอร์ตายเงียบ
-	config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="error")
-	server = uvicorn.Server(config)
-	server.install_signal_handlers = lambda: None
+	"""รันเว็บเซิร์ฟเวอร์ในเธรดเบื้องหลังให้ทนบน Windows
+	- ใช้ SelectorEventLoop (ProactorEventLoop รันในเธรดไม่ได้บน Windows)
+	- ปิด signal handler (ใช้ได้เฉพาะ main thread)
+	- ถ้าล้มเหลว เขียน error ลงไฟล์ server_error.log เพื่อวินิจฉัย
+	"""
+	import asyncio
 	try:
-		server.run()
-	except Exception as e:
-		print(f"[Remote] เซิร์ฟเวอร์หยุดทำงาน: {e}")
+		config_windows_firewall(port)
+
+		# สำคัญบน Windows: ต้องใช้ SelectorEventLoop จึงจะรันในเธรดเบื้องหลังได้
+		if sys.platform == "win32":
+			asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+		loop = asyncio.new_event_loop()
+		asyncio.set_event_loop(loop)
+
+		config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="error", loop="asyncio")
+		server = uvicorn.Server(config)
+		server.install_signal_handlers = lambda: None
+		loop.run_until_complete(server.serve())
+	except Exception:
+		err = traceback.format_exc()
+		print(f"[Remote] เซิร์ฟเวอร์ล้มเหลว:\n{err}")
+		try:
+			with open(data_path("server_error.log"), "w", encoding="utf-8") as f:
+				f.write(err)
+		except Exception:
+			pass
 
 def start_remote_server_async(audio_engine, scheduler_engine, port=8000):
 	global GLOBAL_AUDIO_ENGINE, GLOBAL_SCHEDULER_ENGINE
