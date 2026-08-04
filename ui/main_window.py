@@ -382,21 +382,27 @@ class MainWindow(QMainWindow):
 		row_pin.addWidget(lbl_pin)
 		row_pin.addWidget(btn_copy_pin)
 
-		# ---- ลิงก์เชื่อมต่อ 2 แบบ: ไอพีในวง LAN และ โดเมนสาธารณะ (แต่ละแบบมีปุ่มคัดลอกของตัวเอง) ----
+		# ---- ลิงก์เชื่อมต่อ 2 แบบ: ไอพีในวง LAN และ โดเมนสาธารณะ (จัดกึ่งกลาง + ปุ่มคัดลอกแยกกัน) ----
 		def make_link_row(desc, url_text, url_class="accent-green"):
 			row = QHBoxLayout()
-			row.setAlignment(Qt.AlignCenter)
+			row.setContentsMargins(0, 4, 0, 4)
 			lbl_desc = QLabel(desc)
 			lbl_desc.setProperty("class", "muted")
 			lbl_val = QLabel(url_text)
 			lbl_val.setProperty("class", url_class)
 			lbl_val.setTextInteractionFlags(Qt.TextSelectableByMouse)
-			lbl_val.setWordWrap(True)
 			btn = QPushButton("📋 คัดลอก")
 			btn.setProperty("class", "secondary-btn")
+			btn.setFixedWidth(120)
+			btn.setCursor(Qt.PointingHandCursor)
+			# จัดกลุ่มคำอธิบาย+ลิงก์+ปุ่ม ให้อยู่กึ่งกลางแนวนอน
+			row.addStretch()
 			row.addWidget(lbl_desc)
-			row.addWidget(lbl_val, 1)
+			row.addSpacing(6)
+			row.addWidget(lbl_val)
+			row.addSpacing(14)
 			row.addWidget(btn)
+			row.addStretch()
 			return row, lbl_val, btn
 
 		# แถวที่ 1: ไอพีในวง LAN (สำหรับเข้าจากเครื่องในวงเดียวกัน)
@@ -414,9 +420,20 @@ class MainWindow(QMainWindow):
 		self.btn_copy_public.clicked.connect(lambda: self.copy_text(self.public_url))
 		self.btn_copy_public.setEnabled(bool(self.public_url))
 
-		btn_open = QPushButton("🌐 เปิดลิงก์ในเบราว์เซอร์")
-		btn_open.setProperty("class", "secondary-btn")
-		btn_open.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self.public_url or self.lan_url)))
+		# ปุ่มเปิดลิงก์ทดสอบ: มีทั้งภายใน (LAN) และภายนอก (โดเมน)
+		open_row = QHBoxLayout()
+		open_row.setAlignment(Qt.AlignCenter)
+		btn_open_lan = QPushButton("🌐 เปิดลิงก์ภายใน (LAN)")
+		btn_open_lan.setProperty("class", "secondary-btn")
+		btn_open_lan.setCursor(Qt.PointingHandCursor)
+		btn_open_lan.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self.lan_url)))
+		btn_open_pub = QPushButton("🌍 เปิดลิงก์ภายนอก (โดเมน)")
+		btn_open_pub.setProperty("class", "secondary-btn")
+		btn_open_pub.setCursor(Qt.PointingHandCursor)
+		btn_open_pub.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self.public_url or self.lan_url)))
+		open_row.addWidget(btn_open_lan)
+		open_row.addSpacing(10)
+		open_row.addWidget(btn_open_pub)
 
 		voice_perm_row = QHBoxLayout()
 		voice_perm_row.setAlignment(Qt.AlignCenter)
@@ -431,7 +448,7 @@ class MainWindow(QMainWindow):
 		remote_layout.addLayout(row_pin)
 		remote_layout.addLayout(lan_row)
 		remote_layout.addLayout(pub_row)
-		remote_layout.addWidget(btn_open, alignment=Qt.AlignCenter)
+		remote_layout.addLayout(open_row)
 		remote_layout.addLayout(voice_perm_row)
 		remote_card.setLayout(remote_layout)
 

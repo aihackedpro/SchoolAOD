@@ -1,6 +1,20 @@
 import sys
+import time
+import socket
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtCore import QSharedMemory
+
+
+def wait_server_ready(port, timeout=15):
+	"""รอจนเว็บเซิร์ฟเวอร์ในตัวโปรแกรมพร้อมรับการเชื่อมต่อจริง ก่อนเปิด tunnel (กัน 502)"""
+	deadline = time.time() + timeout
+	while time.time() < deadline:
+		try:
+			with socket.create_connection(("127.0.0.1", port), timeout=1):
+				return True
+		except OSError:
+			time.sleep(0.25)
+	return False
 from audio_engine import AudioEngine
 from scheduler_engine import SchoolScheduler
 from remote_server import start_remote_server_async
@@ -35,6 +49,10 @@ def main():
 	scheduler.start()
 
 	pin_code, lan_url, public_url = start_remote_server_async(audio, scheduler, port=port)
+
+	# รอให้เว็บเซิร์ฟเวอร์พร้อมก่อน แล้วค่อยเปิด tunnel (กันปัญหา 502 ตอนต่อ)
+	server_ok = wait_server_ready(port)
+	print(f"[Main] เว็บเซิร์ฟเวอร์ {'พร้อม' if server_ok else 'ยังไม่ตอบสนอง'} ที่พอร์ต {port}")
 
 	# จัดการลิงก์สาธารณะ: ถ้าตั้งโดเมนถาวรไว้ ใช้เลย / ไม่งั้นสร้างอัตโนมัติด้วย Cloudflare Tunnel
 	tunnel = None

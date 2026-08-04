@@ -400,7 +400,15 @@ async def ws_live_voice(websocket: WebSocket):
 
 def run_server(port=8000):
 	config_windows_firewall(port)
-	uvicorn.run(app, host="0.0.0.0", port=port, log_level="error")
+	# รัน uvicorn ในเธรดเบื้องหลัง: ต้องปิดการติดตั้ง signal handler
+	# มิฉะนั้นบน Windows จะโยน error (signal ใช้ได้เฉพาะ main thread) แล้วเซิร์ฟเวอร์ตายเงียบ
+	config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="error")
+	server = uvicorn.Server(config)
+	server.install_signal_handlers = lambda: None
+	try:
+		server.run()
+	except Exception as e:
+		print(f"[Remote] เซิร์ฟเวอร์หยุดทำงาน: {e}")
 
 def start_remote_server_async(audio_engine, scheduler_engine, port=8000):
 	global GLOBAL_AUDIO_ENGINE, GLOBAL_SCHEDULER_ENGINE
