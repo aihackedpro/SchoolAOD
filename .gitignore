@@ -1,0 +1,16 @@
+venv/
+__pycache__/
+*.pyc
+build/
+dist/
+build_mac/
+dist_mac/
+*.spec.bak
+sounds/temp_*
+cloudflared
+cloudflared.exe
+.DS_Store
+
+# ข้อมูลเฉพาะเครื่อง (ห้าม publish — มี PIN/ฐานข้อมูลของผู้ใช้)
+config.json
+sounds.db

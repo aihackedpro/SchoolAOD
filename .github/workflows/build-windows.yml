@@ -1,0 +1,62 @@
+name: Build Windows EXE
+
+# กด Run เองได้จากแท็บ Actions หรือสร้าง Release อัตโนมัติเมื่อ push tag ที่ขึ้นต้นด้วย v (เช่น v1.0)
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # จำเป็นสำหรับการสร้าง Release ให้คนทั่วไปดาวน์โหลด
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ติดตั้ง Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: ติดตั้ง dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: ดาวน์โหลด cloudflared.exe (สำหรับลิงก์สาธารณะอัตโนมัติ)
+        run: curl -L -o cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+
+      - name: Build .exe
+        run: pyinstaller SchoolAOD.spec --noconfirm
+
+      - name: จัดชุดไฟล์สำหรับแจกจ่าย
+        shell: cmd
+        run: |
+          mkdir release
+          copy dist\SchoolAOD.exe release\
+          copy cloudflared.exe release\
+          if exist README_USER.txt copy README_USER.txt release\
+
+      - name: บีบอัดเป็น zip
+        shell: pwsh
+        run: Compress-Archive -Path release\* -DestinationPath SchoolAOD-Windows.zip -Force
+
+      - name: อัปโหลดผลลัพธ์ (ดาวน์โหลดได้จากหน้า Actions)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SchoolAOD-Windows
+          path: SchoolAOD-Windows.zip
+
+      - name: สร้าง Release ให้คนทั่วไปดาวน์โหลด (เฉพาะตอน push tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: School AOD ${{ github.ref_name }}
+          files: SchoolAOD-Windows.zip
+          body: |
+            ## 🔔 School AOD ${{ github.ref_name }}
+            ดาวน์โหลด **SchoolAOD-Windows.zip** ด้านล่าง แตกไฟล์แล้วดับเบิลคลิก `SchoolAOD.exe` ใช้งานได้เลย
+            (รองรับ Windows 10 / 11)

@@ -1,0 +1,210 @@
+{
+  "operating_start": "00:00:00",
+  "operating_end": "23:59:59",
+  "schedules": [
+    {
+      "id": "1",
+      "time": "07:00:00",
+      "label": "ทำความสะอาดอาคารเรียนและเขตอภัยทาน",
+      "pre_chime": true,
+      "voice_announce": true,
+      "custom_sound": "ไม่มี",
+      "post_chime": false,
+      "days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "2",
+      "time": "08:00:00",
+      "label": "เพลงชาติไทย / เคารพธงชาติ",
+      "pre_chime": true,
+      "voice_announce": true,
+      "custom_sound": "national_anthem.mp3",
+      "post_chime": true,
+      "days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "3",
+      "time": "08:05:00",
+      "label": "เตรียมเข้าแถวเคารพธงชาติและโฮมรูม",
+      "pre_chime": true,
+      "voice_announce": true,
+      "custom_sound": "ไม่มี",
+      "post_chime": false,
+      "days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "4",
+      "time": "08:30:00",
+      "label": "เข้าห้องเรียน คาบเรียนที่ 1",
+      "pre_chime": true,
+      "voice_announce": true,
+      "custom_sound": "ไม่มี",
+      "post_chime": false,
+      "days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "5",
+      "time": "09:30:00",
+      "label": "เริ่มคาบเรียนที่ 2",
+      "pre_chime": true,
+      "voice_announce": true,
+      "custom_sound": "ไม่มี",
+      "post_chime": false,
+      "days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "6",
+      "time": "10:30:00",
+      "label": "เริ่มคาบเรียนที่ 3",
+      "pre_chime": true,
+      "voice_announce": true,
+      "custom_sound": "ไม่มี",
+      "post_chime": false,
+      "days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "7",
+      "time": "11:30:00",
+      "label": "พักรับประทานอาหารกลางวัน",
+      "pre_chime": true,
+      "voice_announce": true,
+      "custom_sound": "ไม่มี",
+      "post_chime": true,
+      "days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "8",
+      "time": "12:30:00",
+      "label": "เข้าห้องเรียน คาบเรียนที่ 4",
+      "pre_chime": true,
+      "voice_announce": true,
+      "custom_sound": "ไม่มี",
+      "post_chime": false,
+      "days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "9",
+      "time": "13:30:00",
+      "label": "เริ่มคาบเรียนที่ 5",
+      "pre_chime": true,
+      "voice_announce": true,
+      "custom_sound": "ไม่มี",
+      "post_chime": false,
+      "days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "10",
+      "time": "14:30:00",
+      "label": "เริ่มคาบเรียนที่ 6",
+      "pre_chime": true,
+      "voice_announce": true,
+      "custom_sound": "ไม่มี",
+      "post_chime": false,
+      "days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "11",
+      "time": "15:25:00",
+      "label": "ได้เวลาเข้าแถวเตรียมตัวกลับบ้าน",
+      "pre_chime": true,
+      "voice_announce": true,
+      "custom_sound": "ไม่มี",
+      "post_chime": false,
+      "days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "12",
+      "time": "15:30:00",
+      "label": "เลิกเรียน / ทำกิจกรรมเลิกเรียน",
+      "pre_chime": true,
+      "voice_announce": true,
+      "custom_sound": "ไม่มี",
+      "post_chime": true,
+      "days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "enabled": true
+    }
+  ]
+}
