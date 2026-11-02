@@ -12,6 +12,9 @@ for pkg in [
 	'uvicorn', 'websockets', 'wsproto', 'fastapi', 'starlette',
 	'gtts', 'anyio', 'sniffio', 'click', 'h11',
 	'pydantic', 'pydantic_core', 'requests', 'certifi', 'idna', 'urllib3', 'charset_normalizer',
+	# เสียง AI (Edge Neural TTS) และไลบรารีเครือข่ายที่ใช้
+	'edge_tts', 'aiohttp', 'aiohappyeyeballs', 'aiosignal', 'attr', 'attrs', 'frozenlist',
+	'multidict', 'propcache', 'yarl', 'tabulate', 'typing_extensions',
 ]:
 	try:
 		d, b, h = collect_all(pkg)

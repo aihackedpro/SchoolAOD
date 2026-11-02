@@ -125,12 +125,41 @@ QHeaderView::section {{
 	border: none;
 }}
 
-QLineEdit, QTimeEdit, QComboBox {{
+QLineEdit, QTimeEdit, QComboBox, QPlainTextEdit, QTextEdit, QTextBrowser, QSpinBox {{
 	background: {p['input_bg']};
 	color: {p['text']};
 	border: 1px solid {p['border']};
 	border-radius: 6px;
 	padding: 5px 8px;
+}}
+QLineEdit:disabled, QPlainTextEdit:disabled, QSpinBox:disabled {{ color: {p['text_dim']}; }}
+
+/* รายการที่กางออกของ QComboBox — กำหนดพื้น/อักษรเอง กันอักษรกลืนพื้นบน Windows */
+QComboBox QAbstractItemView {{
+	background-color: {p['dialog_bg']};
+	color: {p['dialog_text']};
+	selection-background-color: {p['accent']};
+	selection-color: {p['on_accent']};
+	border: 1px solid {p['border']};
+}}
+
+QProgressBar {{
+	background: {p['input_bg']};
+	border: 1px solid {p['border']};
+	border-radius: 8px;
+	text-align: center;
+	color: {p['text']};
+	min-height: 18px;
+}}
+QProgressBar::chunk {{ background: {p['accent']}; border-radius: 7px; }}
+
+QScrollArea {{ background: transparent; border: none; }}
+QScrollArea > QWidget > QWidget {{ background: transparent; }}
+
+QFrame.lang-row {{
+	background: {p['panel']};
+	border: 1px solid {p['border']};
+	border-radius: 10px;
 }}
 
 QCheckBox, QGroupBox {{ color: {p['text']}; }}

@@ -11,6 +11,9 @@ import uvicorn
 from win_system import config_windows_firewall
 from config_manager import load_config
 from paths import resource_path, data_path
+from tts_engine import normalize_langs
+from translator import translate, detect_lang
+from version import APP_VERSION
 
 app = FastAPI(title="School AOD Remote Dashboard")
 
@@ -100,6 +103,29 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 					<div id="talk-status" class="small text-light opacity-75 mt-2">กดปุ่มแล้วพูดออกที่โรงเรียนทันที (เรียลไทม์) — กดอีกครั้งเพื่อวางสาย</div>
 				</div>
 
+				<div class="glass-card p-3 mb-3 text-start">
+					<h5 class="fw-bold text-info mb-2 text-center">📝 ประกาศด้วยข้อความ (เสียง AI หลายภาษา)</h5>
+					<textarea id="ann-text" class="form-control bg-dark text-white border-success mb-2" rows="3" maxlength="500"
+						placeholder="พิมพ์ข้อความประกาศ หรือกดไมค์บนคีย์บอร์ดเพื่อพูดเป็นข้อความ"></textarea>
+					<div class="small text-light opacity-75 mb-1">ติ๊กภาษาที่จะอ่าน • อ่านจากบนลงล่าง (▲▼ สลับลำดับ)</div>
+					<div id="ann-langs" class="mb-2"></div>
+					<div class="d-flex gap-2 mb-2">
+						<select id="ann-style" class="form-select form-select-sm bg-dark text-white border-success">
+							<option value="">🎙️ เสียงตามค่าเริ่มต้น</option>
+							<option value="female">👩 เสียงผู้หญิง</option>
+							<option value="male">👨 เสียงผู้ชาย</option>
+							<option value="girl">👧 เสียงเด็กผู้หญิง</option>
+							<option value="boy">👦 เสียงเด็กผู้ชาย</option>
+						</select>
+					</div>
+					<div class="d-flex gap-3 small mb-2">
+						<label><input type="checkbox" id="ann-chime" checked> 🔔 ติ่งต่องหน้า-ท้าย</label>
+						<label><input type="checkbox" id="ann-time"> 🕒 ขานเวลาด้วย</label>
+					</div>
+					<button onclick="sendAnnounce()" id="ann-btn" class="btn btn-glow w-100 py-2 fs-5">📢 ประกาศ</button>
+					<div id="ann-status" class="small text-light opacity-75 mt-2"></div>
+				</div>
+
 				<div class="text-start">
 					<h5 class="fw-bold mb-3 text-info">📅 ตารางเวลา (กดเพื่อสั่งเล่นทันที):</h5>
 					<div id="schedule-list" class="list-group list-group-flush rounded-3"></div>
@@ -112,7 +138,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 						Develop by hAcKEdpRO | Pongwattana Suebsing
 					</a>
 				</p>
-				<small class="text-muted">Version 1.0 &copy; 2026-2027 All Rights Reserved</small>
+				<small class="text-muted">Version {{APP_VERSION}} &copy; 2026-2027 All Rights Reserved</small>
 			</footer>
 		</div>
 	</div>
@@ -160,6 +186,69 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 			const t = document.getElementById('talk-status');
 			const old = t.innerText; t.innerText = "✅ " + msg;
 			setTimeout(() => t.innerText = old, 2500);
+		}
+
+		// ---- ประกาศด้วยข้อความ: เลือกภาษา + จัดลำดับ + จำนวนรอบทวน ----
+		let annLangs = [
+			{ code: 'th', name: '🇹🇭 ไทย', enabled: true, repeat: 1 },
+			{ code: 'en', name: '🇬🇧 English', enabled: false, repeat: 1 },
+			{ code: 'zh', name: '🇨🇳 中文', enabled: false, repeat: 1 },
+		];
+		try { const saved = JSON.parse(localStorage.getItem('school_aod_langs')); if (Array.isArray(saved) && saved.length === 3) annLangs = saved; } catch (e) {}
+
+		function renderLangs() {
+			localStorage.setItem('school_aod_langs', JSON.stringify(annLangs));
+			document.getElementById('ann-langs').innerHTML = annLangs.map((l, i) => `
+				<div class="d-flex align-items-center gap-2 mb-1 p-1 rounded" style="background:rgba(0,0,0,.25)">
+					<input type="checkbox" class="form-check-input m-0" ${l.enabled ? 'checked' : ''} onchange="annLangs[${i}].enabled=this.checked;renderLangs()">
+					<span class="flex-grow-1">${l.name}</span>
+					<select class="form-select form-select-sm bg-dark text-white" style="width:auto" onchange="annLangs[${i}].repeat=+this.value;renderLangs()">
+						${[1,2,3].map(n => `<option value="${n}" ${l.repeat === n ? 'selected' : ''}>${n === 1 ? 'อ่าน 1 รอบ' : 'ทวน ' + n + ' รอบ'}</option>`).join('')}
+					</select>
+					<button class="btn btn-sm btn-outline-light py-0" ${i === 0 ? 'disabled' : ''} onclick="moveLang(${i},-1)">▲</button>
+					<button class="btn btn-sm btn-outline-light py-0" ${i === annLangs.length - 1 ? 'disabled' : ''} onclick="moveLang(${i},1)">▼</button>
+				</div>`).join('');
+		}
+		function moveLang(i, d) {
+			const j = i + d;
+			if (j < 0 || j >= annLangs.length) return;
+			[annLangs[i], annLangs[j]] = [annLangs[j], annLangs[i]];
+			renderLangs();
+		}
+		renderLangs();
+
+		async function sendAnnounce() {
+			const text = document.getElementById('ann-text').value.trim();
+			const status = document.getElementById('ann-status');
+			if (!text) { status.innerText = "⚠️ กรุณาพิมพ์ข้อความก่อน"; return; }
+			if (!annLangs.some(l => l.enabled)) { status.innerText = "⚠️ เลือกอย่างน้อย 1 ภาษา"; return; }
+			const btn = document.getElementById('ann-btn');
+			btn.disabled = true;
+			status.innerText = "⏳ กำลังแปลภาษาและส่งประกาศ...";
+			try {
+				const chime = document.getElementById('ann-chime').checked;
+				const res = await fetch('/api/announce', {
+					method: 'POST',
+					headers: { 'access-code': pin, 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						text: text, langs: annLangs, chime: chime,
+						time: document.getElementById('ann-time').checked,
+						style: document.getElementById('ann-style').value
+					})
+				});
+				if (res.ok) {
+					const data = await res.json();
+					const tr = Object.entries(data.translations || {}).map(([k, v]) => `${k.toUpperCase()}: ${v || '(แปลไม่สำเร็จ)'}`).join('\\n');
+					status.innerText = "✅ ส่งประกาศแล้ว" + (tr ? "\\n" + tr : "");
+				} else if (res.status === 403) {
+					status.innerText = "🚫 ผู้ดูแลปิดการประกาศผ่านรีโมทอยู่";
+				} else {
+					status.innerText = "❌ ส่งไม่สำเร็จ (HTTP " + res.status + ")";
+				}
+			} catch (e) {
+				status.innerText = "❌ ส่งไม่สำเร็จ: " + e.message;
+			}
+			btn.disabled = false;
 		}
 
 		// ---- ประชาสัมพันธ์สดแบบเรียลไทม์ (walkie-talkie): สตรีม PCM ผ่าน WebSocket ออกทันที ----
@@ -250,7 +339,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-	return HTML_TEMPLATE
+	return HTML_TEMPLATE.replace("{{APP_VERSION}}", APP_VERSION)
 
 # ---- PWA: ทำให้ติดตั้งลงจอโฮมได้เหมือนแอป (Android/iOS) ----
 _PWA_MANIFEST = {
@@ -332,6 +421,47 @@ async def play_schedule(request: Request, access_code: str = Header(...)):
 				GLOBAL_AUDIO_ENGINE.play_item_requested.emit(item)
 				return {"status": "success", "label": item.get("label")}
 	raise HTTPException(status_code=404, detail="Schedule not found")
+
+@app.post("/api/announce")
+def announce(payload: dict, access_code: str = Header(...)):
+	"""ประกาศข้อความด้วยเสียง AI หลายภาษาจากรีโมท
+	เป็นฟังก์ชันแบบ sync → FastAPI รันใน thread pool จึงรอการแปลภาษาได้โดยไม่บล็อกเซิร์ฟเวอร์
+	"""
+	_check_pin(access_code)
+	if not ALLOW_REMOTE_VOICE:
+		raise HTTPException(status_code=403, detail="ผู้ดูแลปิดการประกาศผ่านรีโมท")
+	if not GLOBAL_AUDIO_ENGINE:
+		raise HTTPException(status_code=503, detail="Audio engine not ready")
+
+	text = str(payload.get("text", "")).strip()[:500]
+	if not text:
+		raise HTTPException(status_code=422, detail="ไม่มีข้อความประกาศ")
+
+	source = detect_lang(text)
+	langs, translations = [], {}
+	for entry in normalize_langs(payload.get("langs")):
+		if entry["enabled"]:
+			if entry["code"] == source:
+				entry["text"] = text
+			else:
+				entry["text"] = translate(text, entry["code"], source)
+				translations[entry["code"]] = entry["text"]
+		langs.append(entry)
+
+	now = datetime.now()
+	chime = bool(payload.get("chime", True))
+	GLOBAL_AUDIO_ENGINE.announce_requested.emit({
+		"hour": now.hour,
+		"minute": now.minute,
+		"pre_chime": chime,
+		"post_chime": chime,
+		"voice_announce": bool(payload.get("time", False)),
+		"speak_text": True,
+		"label": "📢 ประกาศจากรีโมท",
+		"langs": langs,
+		"style": payload.get("style") or None,
+	})
+	return {"status": "success", "translations": translations}
 
 @app.get("/api/voice-allowed")
 def voice_allowed(access_code: str = Header(...)):
@@ -431,16 +561,43 @@ def run_server(port=8000):
 		except Exception:
 			pass
 
+def _port_available(port):
+	"""พอร์ตว่างจริงไหม: ต้องไม่มีโปรแกรมอื่นรับการเชื่อมต่ออยู่ และต้องจองพอร์ตได้"""
+	try:
+		with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+			return False   # มีโปรแกรมอื่นตอบอยู่แล้ว (เช่น เว็บเซิร์ฟเวอร์ตัวอื่นในเครื่อง)
+	except OSError:
+		pass
+	with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+		try:
+			s.bind(("0.0.0.0", port))
+			return True
+		except OSError:
+			return False
+
+
+def find_free_port(preferred, tries=20):
+	for port in range(preferred, preferred + tries):
+		if _port_available(port):
+			return port
+	return preferred
+
+
 def start_remote_server_async(audio_engine, scheduler_engine, port=8000):
 	global GLOBAL_AUDIO_ENGINE, GLOBAL_SCHEDULER_ENGINE
 	GLOBAL_AUDIO_ENGINE = audio_engine
 	GLOBAL_SCHEDULER_ENGINE = scheduler_engine
 
-	thread = threading.Thread(target=run_server, args=(port,), daemon=True)
+	# ถ้าพอร์ตที่ตั้งไว้ถูกโปรแกรมอื่นใช้อยู่ ให้ขยับไปพอร์ตว่างถัดไปเอง (รีโมทจะได้ใช้งานได้เสมอ)
+	actual_port = find_free_port(port)
+	if actual_port != port:
+		print(f"[Remote] พอร์ต {port} ถูกโปรแกรมอื่นใช้อยู่ → เปลี่ยนไปใช้พอร์ต {actual_port}")
+
+	thread = threading.Thread(target=run_server, args=(actual_port,), daemon=True)
 	thread.start()
 
 	local_ip = get_local_ip()
-	lan_url = f"http://{local_ip}:{port}"
+	lan_url = f"http://{local_ip}:{actual_port}"
 
 	# ถ้าตั้งโดเมนถาวรไว้ใน config จะใช้เป็นลิงก์สาธารณะ (ฝังไว้ใช้ได้ตลอด)
 	domain = (CONFIG.get("remote_domain") or "").strip()
@@ -448,5 +605,5 @@ def start_remote_server_async(audio_engine, scheduler_engine, port=8000):
 	print(f"[Remote] LAN URL : {lan_url}")
 	if domain:
 		print(f"[Remote] Domain  : {domain}")
-	# คืนค่า: PIN, ลิงก์วง LAN, ลิงก์สาธารณะ (ว่าง = จะได้จาก Cloudflare Tunnel ทีหลัง)
-	return REMOTE_PIN, lan_url, domain
+	# คืนค่า: PIN, ลิงก์วง LAN, ลิงก์สาธารณะ (ว่าง = จะได้จาก Cloudflare Tunnel ทีหลัง), พอร์ตที่ใช้จริง
+	return REMOTE_PIN, lan_url, domain, actual_port

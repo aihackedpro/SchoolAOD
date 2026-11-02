@@ -3,11 +3,13 @@ import os
 from datetime import datetime, timedelta
 from PySide6.QtCore import QObject, Signal, QTimer
 from paths import data_path
+from tts_engine import normalize_schedule_item
 
 DAY_MAP_SHORT = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
 
 class SchoolScheduler(QObject):
 	bell_triggered = Signal(dict)
+	schedules_changed = Signal()   # บันทึกตารางแล้ว (ใช้สั่งเตรียมเสียง AI ล่วงหน้าใหม่)
 
 	def __init__(self, audio_engine, json_path=None):
 		super().__init__()
@@ -39,6 +41,7 @@ class SchoolScheduler(QObject):
 	def sort_schedules_by_time(self):
 		for item in self.schedules:
 			item["time"] = self.normalize_time_str(item.get("time", "00:00:00"))
+			normalize_schedule_item(item)
 		self.schedules.sort(key=lambda x: x.get("time", "00:00:00"))
 
 	def load_schedules(self):
@@ -85,6 +88,7 @@ class SchoolScheduler(QObject):
 			}
 			with open(self.json_path, "w", encoding="utf-8") as f:
 				json.dump(data, f, ensure_ascii=False, indent=2)
+			self.schedules_changed.emit()
 		except Exception as e:
 			print(f"[Scheduler] Error saving schedules.json: {e}")
 
@@ -126,16 +130,7 @@ class SchoolScheduler(QObject):
 			print(f"[Watchdog] Drop ตาราง '{item.get('label')}' เพราะกำลังพูดสดผ่านไมค์")
 			return
 		self.bell_triggered.emit(item)
-		self.audio_engine.play_chime_chain(
-			hour=hour,
-			minute=minute,
-			pre_chime=item.get("pre_chime", True),
-			voice_announce=item.get("voice_announce", True),
-			custom_sound=item.get("custom_sound", "ไม่มี"),
-			post_chime=item.get("post_chime", True),
-			label=item.get("label", "อ๊อดแจ้งเวลา"),
-			announce_label=item.get("label", "")
-		)
+		self.audio_engine.play_schedule_item(item, hour, minute)
 
 	def get_next_schedule_display(self):
 		"""เปรียบเทียบเวลาในเครื่องกับตารางเวลาจริงนับไปข้างหน้าแบบ Realtime"""

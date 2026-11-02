@@ -14,3 +14,5 @@ cloudflared.exe
 # ข้อมูลเฉพาะเครื่อง (ห้าม publish — มี PIN/ฐานข้อมูลของผู้ใช้)
 config.json
 sounds.db
+server_error.log
+voice_cache/

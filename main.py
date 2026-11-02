@@ -54,11 +54,12 @@ def main():
 	config = load_config()
 	port = config.get("remote_port", 8000)
 
-	audio = AudioEngine()
+	audio = AudioEngine(config=config)
 	scheduler = SchoolScheduler(audio)
 	scheduler.start()
 
-	pin_code, lan_url, public_url = start_remote_server_async(audio, scheduler, port=port)
+	# พอร์ตที่ใช้จริงอาจไม่ใช่ค่าที่ตั้งไว้ ถ้าพอร์ตนั้นถูกโปรแกรมอื่นใช้อยู่
+	pin_code, lan_url, public_url, port = start_remote_server_async(audio, scheduler, port=port)
 
 	# รอให้เว็บเซิร์ฟเวอร์พร้อมก่อน แล้วค่อยเปิด tunnel (กันปัญหา 502 ตอนต่อ)
 	server_ok = wait_server_ready(port)

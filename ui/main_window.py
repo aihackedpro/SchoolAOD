@@ -1,22 +1,53 @@
 import os
 import shutil
 from datetime import datetime
+import threading
 from PySide6.QtWidgets import (
 	QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
 	QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog,
 	QFrame, QMessageBox, QGraphicsOpacityEffect, QDialog, QSystemTrayIcon, QMenu,
-	QInputDialog, QButtonGroup, QApplication
+	QInputDialog, QButtonGroup, QApplication, QComboBox, QCheckBox, QGroupBox,
+	QProgressBar, QProgressDialog, QTextBrowser, QScrollArea, QGridLayout
 )
-from PySide6.QtCore import Qt, QTimer, QUrl, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, QTimer, QUrl, QPropertyAnimation, QEasingCurve, QObject, Signal
 from PySide6.QtGui import QGuiApplication, QDesktopServices, QIcon, QAction
 from ui.themes import get_stylesheet, normalize_theme_key, THEME_ORDER, BUTTON_COLORS
 from ui.components import AnimatedToggle, ToastNotification
-from ui.schedule_dialog import ScheduleFormDialog, parse_hms
+from ui.schedule_dialog import ScheduleFormDialog
+from ui.language_widget import LanguageSequenceWidget
 from sound_db import SoundDatabase
 from config_manager import load_config, save_config
 from remote_server import set_allow_voice
 from win_system import prevent_sleep
 from paths import resource_path
+from tts_engine import VOICE_STYLES, LANGUAGES, langs_summary, default_langs
+from updater import UpdateManager, can_self_update
+from version import APP_VERSION
+
+# ข้อความสำเร็จรูปสำหรับประกาศเสียงตามสาย (ผู้ใช้บันทึกเพิ่มเองได้)
+BUILTIN_TEMPLATES = [
+	("เชิญประชุมคณะครู", "ขอเชิญคณะครูทุกท่าน เข้าร่วมประชุมที่ห้องประชุมโรงเรียน ในอีกสิบนาที"),
+	("เรียกผู้ปกครอง", "ขอเชิญผู้ปกครองที่มารับนักเรียน ติดต่อที่ห้องธุรการของโรงเรียน"),
+	("ฝนตก เข้าแถวในอาคาร", "เนื่องจากมีฝนตก ขอให้นักเรียนทุกคนเข้าแถวภายในอาคารเรียน"),
+	("ซ้อมหนีไฟ", "ขณะนี้เป็นการซ้อมอพยพหนีไฟ ขอให้นักเรียนและบุคลากรทุกคนเดินออกจากอาคารอย่างเป็นระเบียบ"),
+]
+
+VOICE_SAMPLES = {
+	"th": "สวัสดี นี่คือเสียงทดสอบจากระบบประกาศเสียงตามสายของโรงเรียน",
+	"en": "Hello, this is a test of the school public announcement system.",
+	"zh": "大家好，这是学校广播系统的测试。",
+}
+
+SPEED_OPTIONS = [("🐢 ช้ามาก", -30), ("ช้า", -15), ("ปกติ", 0), ("เร็ว", 15), ("🐇 เร็วมาก", 30)]
+
+
+class _MainThreadInvoker(QObject):
+	"""ให้เธรดเบื้องหลังสั่งอัปเดตหน้าจอได้อย่างปลอดภัย (ฟังก์ชันจะไปรันบน main thread)"""
+	invoke = Signal(object)
+
+	def __init__(self):
+		super().__init__()
+		self.invoke.connect(lambda fn: fn())
 
 
 def styled_message(parent, title, text, buttons, icon=QMessageBox.Question):
@@ -113,6 +144,57 @@ class BellTriggerDialog(QDialog):
 		layout.addWidget(lbl_info)
 
 
+class UpdateDialog(QDialog):
+	"""แจ้งเวอร์ชันใหม่ + รายละเอียดการเปลี่ยนแปลง ให้ผู้ใช้เลือก อัปเดต / ภายหลัง / ข้ามเวอร์ชันนี้"""
+
+	def __init__(self, info, self_update, parent=None):
+		super().__init__(parent)
+		self.choice = "later"
+		self.setWindowTitle("🆕 มีเวอร์ชันใหม่ของ School AOD")
+		self.resize(620, 520)
+
+		layout = QVBoxLayout(self)
+		title = QLabel(f"🎉 มีเวอร์ชันใหม่พร้อมให้อัปเดต: v{info['version']}")
+		title.setProperty("class", "accent-amber")
+		layout.addWidget(title)
+
+		meta = QLabel(f"เวอร์ชันที่ใช้อยู่: v{APP_VERSION}   →   เวอร์ชันใหม่: v{info['version']}"
+					  + (f"   (เผยแพร่ {info['published_at']})" if info.get("published_at") else ""))
+		meta.setProperty("class", "muted")
+		layout.addWidget(meta)
+
+		notes = QTextBrowser()
+		notes.setOpenExternalLinks(True)
+		notes.setMarkdown(info.get("notes") or "_ไม่มีรายละเอียดการเปลี่ยนแปลง_")
+		layout.addWidget(notes, 1)
+
+		hint_text = ("ระบบจะดาวน์โหลดและติดตั้งให้อัตโนมัติ แล้วเปิดโปรแกรมใหม่เอง\n"
+					 "ตารางเวลา ไฟล์เสียง และการตั้งค่าเดิมจะอยู่ครบทุกอย่าง")
+		if not self_update:
+			hint_text = "จะเปิดหน้าดาวน์โหลดเวอร์ชันใหม่ในเบราว์เซอร์ (การติดตั้งอัตโนมัติรองรับเฉพาะโปรแกรม .exe บน Windows)"
+		hint = QLabel(hint_text)
+		hint.setWordWrap(True)
+		hint.setProperty("class", "muted")
+		layout.addWidget(hint)
+
+		row = QHBoxLayout()
+		for text, choice, color in (
+			("⏭️ ข้ามเวอร์ชันนี้", "skip", BUTTON_COLORS["no"]),
+			("ภายหลัง", "later", BUTTON_COLORS["cancel"]),
+			("⬇️ อัปเดตเลย", "update", BUTTON_COLORS["yes"]),
+		):
+			btn = QPushButton(text)
+			btn.setCursor(Qt.PointingHandCursor)
+			btn.setStyleSheet(f"background:{color}; color:#FFFFFF; font-weight:bold; border-radius:8px; padding:10px 22px;")
+			btn.clicked.connect(lambda _, c=choice: self._choose(c))
+			row.addWidget(btn)
+		layout.addLayout(row)
+
+	def _choose(self, choice):
+		self.choice = choice
+		self.accept()
+
+
 class MainWindow(QMainWindow):
 	def __init__(self, audio_engine, scheduler_engine, pin_code, lan_url, public_url="", tunnel=None):
 		super().__init__()
@@ -143,6 +225,25 @@ class MainWindow(QMainWindow):
 		self.audio.sequence_finished.connect(self.close_bell_popup)
 		self.audio.live_broadcast_started.connect(self.show_live_popup)
 
+		# เตรียมเสียง AI ของตารางไว้ล่วงหน้า (ใช้งานออฟไลน์ได้) — รอ 3 วิหลังแก้ตารางแล้วค่อยทำ
+		self._ui = _MainThreadInvoker()
+		self._precache_timer = QTimer(self)
+		self._precache_timer.setSingleShot(True)
+		self._precache_timer.setInterval(3000)
+		self._precache_timer.timeout.connect(self.start_precache)
+		self.scheduler.schedules_changed.connect(self._precache_timer.start)
+		self.audio.cache_progress.connect(self.on_cache_progress)
+		self.audio.cache_finished.connect(self.on_cache_finished)
+
+		# ระบบอัปเดต
+		self.updater = UpdateManager(self)
+		self.updater.check_finished.connect(self.on_update_checked)
+		self.updater.download_progress.connect(self.on_update_download_progress)
+		self.updater.install_ready.connect(self.on_update_install_ready)
+		self._latest_release = None
+		self._update_manual = False
+		self._update_progress = None
+
 		self.setup_system_tray()
 
 		self.opacity_effect = QGraphicsOpacityEffect(self)
@@ -164,8 +265,10 @@ class MainWindow(QMainWindow):
 		main_layout.addWidget(self.tabs)
 
 		self.init_dashboard_tab()
+		self.init_announce_tab()
 		self.init_schedule_tab()
 		self.init_audio_tab()
+		self.init_settings_tab()
 
 		footer_frame = QFrame()
 		footer_layout = QVBoxLayout(footer_frame)
@@ -175,12 +278,21 @@ class MainWindow(QMainWindow):
 		lbl_credits.setOpenExternalLinks(True)
 		lbl_credits.setAlignment(Qt.AlignCenter)
 
-		lbl_version = QLabel("Version 1.0 © 2026-2027 All Rights Reserved")
-		lbl_version.setStyleSheet("color: #A7F3D0; font-size: 11px;")
-		lbl_version.setAlignment(Qt.AlignCenter)
+		version_row = QHBoxLayout()
+		version_row.setAlignment(Qt.AlignCenter)
+		lbl_version = QLabel(f"Version {APP_VERSION} © 2026-2027 All Rights Reserved")
+		lbl_version.setProperty("class", "muted")
+		lbl_version.setStyleSheet("font-size: 11px;")
+		self.btn_update = QPushButton("🔄 ตรวจสอบอัปเดต")
+		self.btn_update.setProperty("class", "theme-btn")
+		self.btn_update.setCursor(Qt.PointingHandCursor)
+		self.btn_update.clicked.connect(self.on_update_button)
+		version_row.addWidget(lbl_version)
+		version_row.addSpacing(10)
+		version_row.addWidget(self.btn_update)
 
 		footer_layout.addWidget(lbl_credits)
-		footer_layout.addWidget(lbl_version)
+		footer_layout.addLayout(version_row)
 		main_layout.addWidget(footer_frame)
 
 		self.setCentralWidget(central_widget)
@@ -200,6 +312,17 @@ class MainWindow(QMainWindow):
 		if self.tunnel:
 			self.tunnel.url_ready.connect(self.on_public_url_ready)
 			self.tunnel.status_changed.connect(self.on_tunnel_status)
+
+		# เริ่มเตรียมเสียง AI หลังเปิดโปรแกรม และลองใหม่ทุก 15 นาทีถ้ายังไม่ครบ (เผื่อตอนนั้นเน็ตหลุด)
+		self.refresh_voice_status()
+		QTimer.singleShot(3000, self.start_precache)
+		self._cache_retry_timer = QTimer(self)
+		self._cache_retry_timer.timeout.connect(self._retry_precache_if_incomplete)
+		self._cache_retry_timer.start(15 * 60 * 1000)
+
+		# ตรวจสอบเวอร์ชันใหม่อัตโนมัติหลังเปิดโปรแกรม
+		if self.config.get("auto_check_update", True):
+			QTimer.singleShot(8000, lambda: self.check_for_updates(manual=False))
 
 	def on_public_url_ready(self, public_url):
 		self.public_url = public_url
@@ -355,10 +478,16 @@ class MainWindow(QMainWindow):
 		self.lbl_status.setAlignment(Qt.AlignCenter)
 		self.lbl_status.setProperty("class", "accent-green")
 
+		self.lbl_voice_status = QLabel("🎙️ เสียง AI: กำลังตรวจสอบ...")
+		self.lbl_voice_status.setAlignment(Qt.AlignCenter)
+		self.lbl_voice_status.setProperty("class", "muted")
+		self.lbl_voice_status.setStyleSheet("font-size: 13px;")
+
 		clock_layout.addWidget(lbl_title_now)
 		clock_layout.addWidget(self.lbl_clock_big)
 		clock_layout.addWidget(self.lbl_next_bell)
 		clock_layout.addWidget(self.lbl_status)
+		clock_layout.addWidget(self.lbl_voice_status)
 		clock_card.setLayout(clock_layout)
 
 		remote_card = QFrame()
@@ -471,15 +600,16 @@ class MainWindow(QMainWindow):
 
 	def test_live_time_bell(self):
 		now = datetime.now()
-		self.audio.play_chime_chain(
-			hour=now.hour,
-			minute=now.minute,
-			pre_chime=True,
-			voice_announce=True,
-			custom_sound="ไม่มี",
-			post_chime=True,
-			label=f"ทดสอบขานเวลาปัจจุบัน ({now.strftime('%H:%M:%S')} น.)"
-		)
+		self.audio.play_announcement({
+			"hour": now.hour,
+			"minute": now.minute,
+			"pre_chime": True,
+			"voice_announce": True,
+			"speak_text": False,
+			"post_chime": True,
+			"label": f"ทดสอบขานเวลาปัจจุบัน ({now.strftime('%H:%M:%S')} น.)",
+			"langs": default_langs(),
+		})
 
 	def copy_remote_link(self):
 		QGuiApplication.clipboard().setText(self.remote_url)
@@ -519,8 +649,8 @@ class MainWindow(QMainWindow):
 		layout.addLayout(toolbar)
 
 		self.table = QTableWidget()
-		self.table.setColumnCount(8)
-		self.table.setHorizontalHeaderLabels(["เวลา (HH:mm:ss)", "รายละเอียด", "ติ่งต่องหน้า", "ขานเวลา", "เสียงต่อท้าย", "ติ่งต่องท้าย", "เปิด/ปิด", "จัดการ"])
+		self.table.setColumnCount(9)
+		self.table.setHorizontalHeaderLabels(["เวลา (HH:mm:ss)", "รายละเอียด", "ติ่งต่องหน้า", "ขานเวลา", "เสียงต่อท้าย", "ติ่งต่องท้าย", "เปิด/ปิด", "ภาษา (ลำดับอ่าน)", "จัดการ"])
 		
 		self.table.verticalHeader().setDefaultSectionSize(42)
 		self.table.verticalHeader().setStyleSheet("QHeaderView::section { background: #064E3B; color: #6EE7B7; font-weight: bold; font-size: 12px; border: none; padding: 4px; }")
@@ -528,7 +658,7 @@ class MainWindow(QMainWindow):
 		header = self.table.horizontalHeader()
 		header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
 		header.setSectionResizeMode(1, QHeaderView.Stretch)
-		for col in range(2, 8):
+		for col in range(2, 9):
 			header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
 
 		# อ่านค่าจริงที่ผู้ใช้พิมพ์ในช่องเวลา/รายละเอียด แล้วมีผลทันที
@@ -581,6 +711,12 @@ class MainWindow(QMainWindow):
 			toggle_enabled.state_changed.connect(lambda checked, idx=row: self.toggle_enabled_realtime(idx, checked))
 			self.table.setCellWidget(row, 6, self._wrap_toggle(toggle_enabled))
 
+			lang_item = QTableWidgetItem(langs_summary(item.get("langs")))
+			lang_item.setFlags(lang_item.flags() & ~Qt.ItemIsEditable)
+			lang_item.setTextAlignment(Qt.AlignCenter)
+			lang_item.setToolTip("แก้ภาษาและลำดับการอ่านได้ที่ปุ่ม ✏️")
+			self.table.setItem(row, 7, lang_item)
+
 			btn_box = QHBoxLayout()
 			
 			btn_play = QPushButton("▶️ ลองฟัง")
@@ -613,7 +749,7 @@ class MainWindow(QMainWindow):
 
 			btn_container = QWidget()
 			btn_container.setLayout(btn_box)
-			self.table.setCellWidget(row, 7, btn_container)
+			self.table.setCellWidget(row, 8, btn_container)
 
 		self._is_refreshing = False
 
@@ -638,17 +774,7 @@ class MainWindow(QMainWindow):
 	def preview_schedule_sound(self, index):
 		if 0 <= index < len(self.scheduler.schedules):
 			item = self.scheduler.schedules[index]
-			h, m, _ = parse_hms(item.get("time", "08:00:00"))
-			self.audio.play_chime_chain(
-				hour=h,
-				minute=m,
-				pre_chime=item.get("pre_chime", True),
-				voice_announce=item.get("voice_announce", True),
-				custom_sound=item.get("custom_sound", "ไม่มี"),
-				post_chime=item.get("post_chime", True),
-				label=f"ทดลองฟัง ({item.get('label')})",
-				announce_label=item.get("label", "")
-			)
+			self.audio.play_schedule_item(item, label=f"ทดลองฟัง ({item.get('label')})")
 
 	def _wrap_toggle(self, toggle_widget):
 		container = QWidget()
@@ -693,9 +819,12 @@ class MainWindow(QMainWindow):
 				self.scheduler.save_schedules()
 				self.refresh_schedule_table()
 
+	def _preview_dialog_item(self, data):
+		self.audio.play_schedule_item(data, label=f"ทดลองฟัง ({data.get('label')})")
+
 	def add_schedule_dialog(self):
 		try:
-			dialog = ScheduleFormDialog(self.audio.sounds_dir, parent=self)
+			dialog = ScheduleFormDialog(self.audio.sounds_dir, parent=self, preview_callback=self._preview_dialog_item)
 			if dialog.exec() == QDialog.Accepted:
 				new_data = dialog.get_data()
 				new_data["id"] = str(len(self.scheduler.schedules) + 1)
@@ -709,7 +838,8 @@ class MainWindow(QMainWindow):
 		try:
 			if 0 <= index < len(self.scheduler.schedules):
 				current_data = self.scheduler.schedules[index]
-				dialog = ScheduleFormDialog(self.audio.sounds_dir, item_data=current_data, parent=self)
+				dialog = ScheduleFormDialog(self.audio.sounds_dir, item_data=current_data, parent=self,
+											preview_callback=self._preview_dialog_item)
 				if dialog.exec() == QDialog.Accepted:
 					updated_data = dialog.get_data()
 					updated_data["id"] = current_data.get("id", str(index + 1))
@@ -808,3 +938,434 @@ class MainWindow(QMainWindow):
 			if result is None:
 				styled_message(self, "ลบไม่ได้", "ไฟล์นี้เป็นไฟล์ระบบ ไม่สามารถลบได้", QMessageBox.Ok, icon=QMessageBox.Warning)
 			self.refresh_audio_list()
+
+	# ================================================================ แท็บประกาศเสียงตามสาย
+	def init_announce_tab(self):
+		tab = QWidget()
+		layout = QVBoxLayout(tab)
+		layout.setContentsMargins(20, 16, 20, 16)
+
+		title = QLabel("📢 ศูนย์ประกาศเสียงตามสาย — พิมพ์ข้อความ แล้วให้เสียง AI ประกาศหลายภาษา")
+		title.setProperty("class", "title")
+		layout.addWidget(title)
+
+		tpl_row = QHBoxLayout()
+		tpl_row.addWidget(QLabel("📋 ข้อความสำเร็จรูป:"))
+		self.combo_templates = QComboBox()
+		self.combo_templates.setMinimumWidth(280)
+		self.combo_templates.activated.connect(self.load_announce_template)
+		btn_save_tpl = QPushButton("💾 บันทึกเป็นข้อความสำเร็จรูป")
+		btn_save_tpl.setProperty("class", "secondary-btn")
+		btn_save_tpl.clicked.connect(self.save_announce_template)
+		btn_del_tpl = QPushButton("🗑️ ลบ")
+		btn_del_tpl.setProperty("class", "secondary-btn")
+		btn_del_tpl.clicked.connect(self.delete_announce_template)
+		tpl_row.addWidget(self.combo_templates, 1)
+		tpl_row.addWidget(btn_save_tpl)
+		tpl_row.addWidget(btn_del_tpl)
+		layout.addLayout(tpl_row)
+		self.refresh_announce_templates()
+
+		box = QGroupBox("🌐 ข้อความประกาศ & ลำดับภาษา")
+		box_layout = QVBoxLayout(box)
+		self.announce_langs = LanguageSequenceWidget(default_langs(), multiline=True)
+		box_layout.addWidget(self.announce_langs)
+		layout.addWidget(box, 1)
+
+		opt = QHBoxLayout()
+		self.chk_ann_pre = QCheckBox("🔔 ติ่งต่องนำหน้า")
+		self.chk_ann_pre.setChecked(True)
+		self.chk_ann_post = QCheckBox("🔔 ติ่งต่องปิดท้าย")
+		self.chk_ann_post.setChecked(True)
+		self.chk_ann_time = QCheckBox("🕒 ขานเวลาปัจจุบันด้วย")
+		self.combo_ann_style = QComboBox()
+		self.combo_ann_style.addItem("⚙️ สไตล์เสียงตามค่าเริ่มต้น", "")
+		for key, name in VOICE_STYLES:
+			self.combo_ann_style.addItem(name, key)
+		for w in (self.chk_ann_pre, self.chk_ann_post, self.chk_ann_time):
+			opt.addWidget(w)
+		opt.addStretch()
+		opt.addWidget(QLabel("🎙️ เสียง:"))
+		opt.addWidget(self.combo_ann_style)
+		layout.addLayout(opt)
+
+		act = QHBoxLayout()
+		btn_announce = QPushButton("📢 ประกาศทันที")
+		btn_announce.setProperty("class", "primary-btn")
+		btn_announce.setStyleSheet("font-size: 17px; padding: 14px;")
+		btn_announce.setCursor(Qt.PointingHandCursor)
+		btn_announce.clicked.connect(self.announce_now)
+		btn_stop = QPushButton("⏹️ หยุดเสียง")
+		btn_stop.setProperty("class", "danger-btn")
+		btn_stop.setStyleSheet("font-size: 15px; padding: 12px 20px;")
+		btn_stop.setCursor(Qt.PointingHandCursor)
+		btn_stop.clicked.connect(self.audio.stop_all)
+		act.addWidget(btn_announce, 1)
+		act.addWidget(btn_stop)
+		layout.addLayout(act)
+
+		self.lbl_announce_status = QLabel("💡 พิมพ์ภาษาไทย แล้วกด 'แปลอัตโนมัติ' เพื่อเติมภาษาอังกฤษ/จีน • ใช้ไมค์บนคีย์บอร์ดพิมพ์ด้วยเสียงได้")
+		self.lbl_announce_status.setProperty("class", "muted")
+		self.lbl_announce_status.setWordWrap(True)
+		layout.addWidget(self.lbl_announce_status)
+
+		self.tabs.addTab(tab, "📢 ประกาศเสียงตามสาย")
+
+	def announce_now(self):
+		langs = self.announce_langs.get_langs()
+		if not any(e["enabled"] and e["text"] for e in langs) and not self.chk_ann_time.isChecked():
+			self.lbl_announce_status.setText("⚠️ กรุณาพิมพ์ข้อความ และติ๊กอย่างน้อย 1 ภาษา")
+			return
+		if self.audio.live_active:
+			self.lbl_announce_status.setText("🎙️ กำลังมีการพูดสดผ่านไมค์อยู่ — ระบบให้ไมค์มาก่อน กรุณารอวางสาย")
+			return
+		now = datetime.now()
+		self.audio.play_announcement({
+			"hour": now.hour,
+			"minute": now.minute,
+			"pre_chime": self.chk_ann_pre.isChecked(),
+			"post_chime": self.chk_ann_post.isChecked(),
+			"voice_announce": self.chk_ann_time.isChecked(),
+			"speak_text": True,
+			"label": "📢 ประกาศเสียงตามสาย",
+			"langs": langs,
+			"style": self.combo_ann_style.currentData() or None,
+		})
+		order = " → ".join(f"{e['code'].upper()}" + (f"×{e['repeat']}" if e["repeat"] > 1 else "")
+						   for e in langs if e["enabled"])
+		self.lbl_announce_status.setText(f"📢 กำลังประกาศ ({order}) — ประโยคใหม่อาจใช้เวลาสร้างเสียงสักครู่")
+
+	def refresh_announce_templates(self):
+		self.combo_templates.clear()
+		self.combo_templates.addItem("— เลือกข้อความสำเร็จรูป —", None)
+		for name, text in BUILTIN_TEMPLATES:
+			langs = default_langs()
+			langs[0]["text"] = text
+			self.combo_templates.addItem(f"⭐ {name}", {"name": name, "langs": langs, "builtin": True})
+		for tpl in self.config.get("announce_templates", []):
+			self.combo_templates.addItem(f"📝 {tpl.get('name', '')}", dict(tpl, builtin=False))
+
+	def load_announce_template(self, index):
+		data = self.combo_templates.itemData(index)
+		if data:
+			self.announce_langs.set_langs(data.get("langs"))
+			self.lbl_announce_status.setText(f"📋 โหลดข้อความ '{data.get('name')}' แล้ว — ตรวจสอบแล้วกดประกาศได้เลย")
+
+	def save_announce_template(self):
+		langs = self.announce_langs.get_langs()
+		if not any(e["text"] for e in langs):
+			self.lbl_announce_status.setText("⚠️ ยังไม่มีข้อความให้บันทึก")
+			return
+		name, ok = QInputDialog.getText(self, "บันทึกข้อความสำเร็จรูป", "ตั้งชื่อข้อความ:")
+		if ok and name.strip():
+			templates = [t for t in self.config.get("announce_templates", []) if t.get("name") != name.strip()]
+			templates.append({"name": name.strip(), "langs": langs})
+			self.config["announce_templates"] = templates
+			save_config(self.config)
+			self.refresh_announce_templates()
+			self.lbl_announce_status.setText(f"💾 บันทึก '{name.strip()}' แล้ว")
+
+	def delete_announce_template(self):
+		data = self.combo_templates.currentData()
+		if not data or data.get("builtin"):
+			self.lbl_announce_status.setText("⚠️ เลือกข้อความที่บันทึกเอง (📝) ก่อนกดลบ")
+			return
+		self.config["announce_templates"] = [t for t in self.config.get("announce_templates", [])
+											 if t.get("name") != data.get("name")]
+		save_config(self.config)
+		self.refresh_announce_templates()
+
+	# ================================================================ แท็บตั้งค่า
+	def init_settings_tab(self):
+		tab = QWidget()
+		outer = QVBoxLayout(tab)
+		scroll = QScrollArea()
+		scroll.setWidgetResizable(True)
+		content = QWidget()
+		layout = QVBoxLayout(content)
+		layout.setContentsMargins(20, 16, 20, 16)
+		scroll.setWidget(content)
+		outer.addWidget(scroll)
+
+		# ---- ระบบเสียง AI ----
+		voice_box = QGroupBox("🎙️ ระบบเสียง AI (Neural Voice) — ใช้ประกาศทุกภาษา")
+		grid = QGridLayout(voice_box)
+		grid.setHorizontalSpacing(12)
+
+		grid.addWidget(QLabel("สไตล์เสียงเริ่มต้น:"), 0, 0)
+		self.combo_style = QComboBox()
+		for key, name in VOICE_STYLES:
+			self.combo_style.addItem(name, key)
+		self.combo_style.setCurrentIndex(max(0, self.combo_style.findData(self.config.get("tts_style", "female"))))
+		self.combo_style.currentIndexChanged.connect(self.on_voice_style_changed)
+		grid.addWidget(self.combo_style, 0, 1)
+
+		grid.addWidget(QLabel("ความเร็วการพูด:"), 1, 0)
+		self.combo_speed = QComboBox()
+		for name, value in SPEED_OPTIONS:
+			self.combo_speed.addItem(name, value)
+		self.combo_speed.setCurrentIndex(max(0, self.combo_speed.findData(int(self.config.get("tts_rate", 0)))))
+		self.combo_speed.currentIndexChanged.connect(self.on_voice_speed_changed)
+		grid.addWidget(self.combo_speed, 1, 1)
+
+		self.voice_combos = {}
+		for row, (code, name, flag) in enumerate(LANGUAGES, start=2):
+			grid.addWidget(QLabel(f"{flag} เสียงภาษา{name}:"), row, 0)
+			combo = QComboBox()
+			combo.setMinimumWidth(360)
+			combo.currentIndexChanged.connect(lambda _, c=code: self.on_voice_override_changed(c))
+			self.voice_combos[code] = combo
+			grid.addWidget(combo, row, 1)
+			btn_test = QPushButton("🔊 ทดสอบ")
+			btn_test.setProperty("class", "secondary-btn")
+			btn_test.clicked.connect(lambda _, c=code: self.test_voice(c))
+			grid.addWidget(btn_test, row, 2)
+		self.populate_voice_combos()
+
+		btn_row = QHBoxLayout()
+		self.btn_refresh_voices = QPushButton("🔄 โหลดรายชื่อเสียงทั้งหมดจากอินเทอร์เน็ต")
+		self.btn_refresh_voices.setProperty("class", "secondary-btn")
+		self.btn_refresh_voices.clicked.connect(self.refresh_voice_list)
+		btn_precache = QPushButton("⬇️ ดาวน์โหลดเสียงทุกตารางเก็บไว้ (ใช้ออฟไลน์)")
+		btn_precache.setProperty("class", "primary-btn")
+		btn_precache.clicked.connect(self.start_precache)
+		btn_clear = QPushButton("🗑️ ล้างแคชเสียง")
+		btn_clear.setProperty("class", "secondary-btn")
+		btn_clear.clicked.connect(self.clear_voice_cache)
+		btn_row.addWidget(self.btn_refresh_voices)
+		btn_row.addWidget(btn_precache)
+		btn_row.addWidget(btn_clear)
+		grid.addLayout(btn_row, 5, 0, 1, 3)
+
+		self.cache_bar = QProgressBar()
+		self.cache_bar.setRange(0, 1)
+		self.cache_bar.setValue(0)
+		grid.addWidget(self.cache_bar, 6, 0, 1, 3)
+		self.lbl_cache_status = QLabel("")
+		self.lbl_cache_status.setProperty("class", "muted")
+		self.lbl_cache_status.setWordWrap(True)
+		grid.addWidget(self.lbl_cache_status, 7, 0, 1, 3)
+
+		note = QLabel("ℹ️ เสียงที่ดาวน์โหลดแล้วจะเก็บไว้ในเครื่อง ถึงเวลาออดจะเล่นได้ทันทีแม้ไม่มีอินเทอร์เน็ต "
+					  "• เสียงเด็กของภาษาไทยจำลองจากการปรับระดับเสียง • เลือก 'เสียงอื่น ๆ' รายภาษาได้ในช่องด้านบน")
+		note.setProperty("class", "muted")
+		note.setWordWrap(True)
+		grid.addWidget(note, 8, 0, 1, 3)
+		layout.addWidget(voice_box)
+
+		# ---- อัปเดตโปรแกรม ----
+		upd_box = QGroupBox("🔄 อัปเดตโปรแกรม")
+		upd = QVBoxLayout(upd_box)
+		lbl_ver = QLabel(f"เวอร์ชันที่ใช้อยู่: v{APP_VERSION}")
+		lbl_ver.setProperty("class", "title")
+		upd.addWidget(lbl_ver)
+		self.chk_auto_update = QCheckBox("ตรวจสอบเวอร์ชันใหม่อัตโนมัติทุกครั้งที่เปิดโปรแกรม")
+		self.chk_auto_update.setChecked(self.config.get("auto_check_update", True))
+		self.chk_auto_update.toggled.connect(self.on_auto_update_toggled)
+		upd.addWidget(self.chk_auto_update)
+		row = QHBoxLayout()
+		btn_check = QPushButton("🔍 ตรวจสอบอัปเดตตอนนี้")
+		btn_check.setProperty("class", "primary-btn")
+		btn_check.clicked.connect(lambda: self.check_for_updates(manual=True))
+		self.lbl_update_status = QLabel("")
+		self.lbl_update_status.setProperty("class", "muted")
+		row.addWidget(btn_check)
+		row.addWidget(self.lbl_update_status, 1)
+		upd.addLayout(row)
+		layout.addWidget(upd_box)
+		layout.addStretch()
+
+		self.tabs.addTab(tab, "⚙️ ตั้งค่า")
+
+	# ---- ตั้งค่าเสียง ----
+	def populate_voice_combos(self):
+		overrides = self.config.get("tts_voice_overrides") or {}
+		for code, combo in self.voice_combos.items():
+			combo.blockSignals(True)
+			combo.clear()
+			combo.addItem("✨ อัตโนมัติ (ตามสไตล์เสียงเริ่มต้น)", "")
+			for name, desc in self.audio.tts.list_voices(code):
+				combo.addItem(f"{name}" + (f"  —  {desc}" if desc else ""), name)
+			current = overrides.get(code, "")
+			idx = combo.findData(current)
+			if idx < 0 and current:
+				combo.addItem(current, current)
+				idx = combo.count() - 1
+			combo.setCurrentIndex(max(0, idx))
+			combo.blockSignals(False)
+
+	def _voice_settings_changed(self):
+		save_config(self.config)
+		self.refresh_voice_status()
+		self._precache_timer.start()
+
+	def on_voice_style_changed(self, _):
+		self.config["tts_style"] = self.combo_style.currentData()
+		self._voice_settings_changed()
+
+	def on_voice_speed_changed(self, _):
+		self.config["tts_rate"] = int(self.combo_speed.currentData())
+		self._voice_settings_changed()
+
+	def on_voice_override_changed(self, code):
+		overrides = dict(self.config.get("tts_voice_overrides") or {})
+		overrides[code] = self.voice_combos[code].currentData() or ""
+		self.config["tts_voice_overrides"] = overrides
+		self._voice_settings_changed()
+
+	def test_voice(self, code):
+		self.audio.play_announcement({
+			"pre_chime": False,
+			"post_chime": False,
+			"voice_announce": False,
+			"speak_text": True,
+			"label": f"ทดสอบเสียง {code.upper()}",
+			"langs": [{"code": code, "enabled": True, "text": VOICE_SAMPLES[code], "repeat": 1}],
+		})
+
+	def refresh_voice_list(self):
+		self.btn_refresh_voices.setEnabled(False)
+		self.lbl_cache_status.setText("⏳ กำลังโหลดรายชื่อเสียงจากอินเทอร์เน็ต...")
+
+		def worker():
+			count = self.audio.tts.refresh_voices()
+
+			def done():
+				self.btn_refresh_voices.setEnabled(True)
+				self.populate_voice_combos()
+				self.lbl_cache_status.setText(f"✅ โหลดรายชื่อเสียงแล้ว {count} เสียง" if count
+											  else "⚠️ โหลดไม่สำเร็จ (ตรวจสอบอินเทอร์เน็ต)")
+			self._ui.invoke.emit(done)
+
+		threading.Thread(target=worker, daemon=True).start()
+
+	def clear_voice_cache(self):
+		confirm = styled_message(self, "ล้างแคชเสียง",
+								 "ลบไฟล์เสียง AI ที่ดาวน์โหลดเก็บไว้ทั้งหมด?\n(ระบบจะดาวน์โหลดใหม่อัตโนมัติเมื่อมีอินเทอร์เน็ต)",
+								 QMessageBox.Yes | QMessageBox.No)
+		if confirm == QMessageBox.Yes:
+			self.audio.tts.clear_cache()
+			self.refresh_voice_status()
+			self._precache_timer.start()
+
+	# ---- เตรียมเสียงล่วงหน้า ----
+	def start_precache(self):
+		self.audio.precache_schedules(self.scheduler.schedules)
+
+	def _retry_precache_if_incomplete(self):
+		"""ยังมีประโยคที่ไม่มีเสียงเลย หรือยังเป็นแค่เสียงสำรอง → ลองดาวน์โหลดเสียง AI ใหม่"""
+		ready, total, ai_ready = self.audio.cache_status(self.scheduler.schedules)
+		if ready < total or ai_ready < total:
+			self.start_precache()
+
+	def on_cache_progress(self, done, total):
+		self.cache_bar.setRange(0, max(1, total))
+		self.cache_bar.setValue(done)
+		self.lbl_voice_status.setText(f"🎙️ เสียง AI: กำลังเตรียมเสียงประกาศ {done}/{total}")
+
+	def on_cache_finished(self, ok, total):
+		self.refresh_voice_status()
+
+	def refresh_voice_status(self):
+		ready, total, ai_ready = self.audio.cache_status(self.scheduler.schedules)
+		size_mb = self.audio.tts.cache_size_bytes() / (1024 * 1024)
+		if total == 0:
+			text = "🎙️ เสียง AI: พร้อมใช้งาน (ยังไม่มีประโยคที่ต้องเตรียม)"
+		elif ready < total:
+			text = f"🎙️ เสียง AI: ⚠️ พร้อมออฟไลน์ {ready}/{total} ประโยค — เชื่อมอินเทอร์เน็ตเพื่อดาวน์โหลดส่วนที่เหลือ"
+		elif ai_ready < total:
+			text = (f"🎙️ เสียง AI: ✅ พร้อมใช้งานออฟไลน์ครบ {total} ประโยค "
+					f"(เสียง AI {ai_ready} • เสียงสำรอง {total - ai_ready} จะอัปเกรดเป็นเสียง AI อัตโนมัติ)")
+		else:
+			text = f"🎙️ เสียง AI: ✅ พร้อมใช้งานออฟไลน์ครบ {total}/{total} ประโยค"
+		self.lbl_voice_status.setText(text)
+		if hasattr(self, "lbl_cache_status"):
+			self.lbl_cache_status.setText(f"{text}  •  พื้นที่แคช {size_mb:.1f} MB")
+			self.cache_bar.setRange(0, max(1, total))
+			self.cache_bar.setValue(ready)
+
+	# ================================================================ อัปเดตโปรแกรม
+	def on_auto_update_toggled(self, on):
+		self.config["auto_check_update"] = bool(on)
+		save_config(self.config)
+
+	def on_update_button(self):
+		if self._latest_release and self._latest_release.get("is_newer"):
+			self.show_update_dialog(self._latest_release)
+		else:
+			self.check_for_updates(manual=True)
+
+	def check_for_updates(self, manual=False):
+		self._update_manual = manual
+		if manual:
+			self.btn_update.setText("⏳ กำลังตรวจสอบ...")
+			self.lbl_update_status.setText("⏳ กำลังตรวจสอบเวอร์ชันล่าสุด...")
+		self.updater.check_async()
+
+	def on_update_checked(self, info, error):
+		manual = self._update_manual
+		if error or not info:
+			self.btn_update.setText("🔄 ตรวจสอบอัปเดต")
+			self.lbl_update_status.setText("⚠️ ตรวจสอบไม่สำเร็จ (ตรวจสอบอินเทอร์เน็ต)")
+			if manual:
+				styled_message(self, "ตรวจสอบอัปเดตไม่สำเร็จ",
+							   f"เชื่อมต่อ GitHub ไม่ได้ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่\n\n{error}",
+							   QMessageBox.Ok, icon=QMessageBox.Warning)
+			return
+
+		self._latest_release = info
+		if not info["is_newer"]:
+			self.btn_update.setText("🔄 ตรวจสอบอัปเดต")
+			self.lbl_update_status.setText(f"✅ ใช้เวอร์ชันล่าสุดแล้ว (v{APP_VERSION})")
+			if manual:
+				styled_message(self, "ไม่มีอัปเดต", f"คุณใช้เวอร์ชันล่าสุดแล้ว (v{APP_VERSION}) 🎉",
+							   QMessageBox.Ok, icon=QMessageBox.Information)
+			return
+
+		self.btn_update.setText(f"🆕 อัปเดตเป็น v{info['version']}")
+		self.lbl_update_status.setText(f"🆕 มีเวอร์ชันใหม่ v{info['version']}")
+		if manual or info["version"] != self.config.get("skip_version", ""):
+			self.show_update_dialog(info)
+
+	def show_update_dialog(self, info):
+		self.show_window()
+		dialog = UpdateDialog(info, can_self_update(), self)
+		dialog.exec()
+		if dialog.choice == "skip":
+			self.config["skip_version"] = info["version"]
+			save_config(self.config)
+		elif dialog.choice == "update":
+			if can_self_update() and info.get("asset_url"):
+				self._update_progress = QProgressDialog("⬇️ กำลังดาวน์โหลดเวอร์ชันใหม่...", None, 0, 100, self)
+				self._update_progress.setWindowTitle(f"อัปเดตเป็น v{info['version']}")
+				self._update_progress.setWindowModality(Qt.WindowModal)
+				self._update_progress.setMinimumDuration(0)
+				self._update_progress.setValue(0)
+				self._update_progress.show()
+				self.updater.download_async(info)
+			else:
+				QDesktopServices.openUrl(QUrl(info.get("html_url")))
+
+	def on_update_download_progress(self, done, total):
+		if self._update_progress:
+			if total:
+				self._update_progress.setValue(int(done * 100 / total))
+			self._update_progress.setLabelText(f"⬇️ กำลังดาวน์โหลด... {done / 1048576:.1f} / {total / 1048576:.1f} MB")
+
+	def on_update_install_ready(self, ok, result):
+		if self._update_progress:
+			self._update_progress.close()
+			self._update_progress = None
+		if not ok:
+			styled_message(self, "อัปเดตไม่สำเร็จ", f"ดาวน์โหลด/เตรียมติดตั้งไม่สำเร็จ:\n{result}",
+						   QMessageBox.Ok, icon=QMessageBox.Warning)
+			return
+		styled_message(self, "พร้อมติดตั้ง",
+					   "ดาวน์โหลดเรียบร้อย ✅\nโปรแกรมจะปิดตัวและเปิดเวอร์ชันใหม่ให้อัตโนมัติภายในไม่กี่วินาที",
+					   QMessageBox.Ok, icon=QMessageBox.Information)
+		try:
+			UpdateManager.launch_installer(result)
+		except Exception as e:
+			styled_message(self, "อัปเดตไม่สำเร็จ", f"เริ่มตัวติดตั้งไม่ได้: {e}", QMessageBox.Ok, icon=QMessageBox.Warning)
+			return
+		QGuiApplication.quit()
