@@ -23,6 +23,9 @@ DEFAULT_CONFIG = {
 	"tts_speed": "normal",                                   # slower / slow / normal / fast / faster
 	"tts_voice_overrides": {"th": "", "en": "", "zh": ""},   # เลือกเสียงเฉพาะภาษา (ว่าง = ตามสไตล์)
 	"announce_templates": [],                                # ข้อความประกาศสำเร็จรูปที่ผู้ใช้บันทึกไว้
+	# ---- เสียงติ่งต่องเริ่มต้น (10 แบบ × 3 ความยาว) ----
+	"chime_style": "classic",
+	"chime_length": "medium",
 	# ---- ระบบอัปเดต ----
 	"auto_check_update": True,
 }

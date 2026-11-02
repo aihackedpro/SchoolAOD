@@ -51,12 +51,12 @@ SPEED_RATE = {key: rate for key, _, rate in SPEEDS}
 
 MAX_REPEAT = 10
 
-# จังหวะเว้นระหว่างเสียง (มิลลิวินาที) ให้ฟังเป็นธรรมชาติแบบผู้ประกาศ
-GAP_AFTER_CHIME = 400
-GAP_TIME_TO_TEXT = 450    # ขานเวลา → ข้อความ (ภาษาเดียวกัน)
-GAP_BETWEEN_LANGS = 800   # เปลี่ยนภาษา
-GAP_BETWEEN_ROUNDS = 1200 # ขึ้นรอบใหม่
-GAP_BEFORE_SOUND = 800    # ก่อนเสียงต่อท้าย/ติ่งต่องปิดท้าย
+# จังหวะเว้นระหว่างไฟล์เสียง (มิลลิวินาที) — ไฟล์เสียง AI มีช่วงเงียบหัว/ท้ายอยู่แล้วเล็กน้อย จึงเว้นเพิ่มแค่พอดี
+# (ไฟล์เสียง AI ยังมีความเงียบหัว ~0.2 วิ และหาง ~0.2 วิ หลังตัด รวมกับค่าด้านล่างเป็นช่วงหยุดที่ได้ยินจริง)
+GAP_AFTER_CHIME = 100
+GAP_BETWEEN_LANGS = 250   # เปลี่ยนภาษา (ได้ยินจริง ~0.65 วิ)
+GAP_BETWEEN_ROUNDS = 550  # ขึ้นรอบใหม่ (ได้ยินจริง ~0.95 วิ)
+GAP_BEFORE_SOUND = 300    # ก่อนเสียงต่อท้าย/ติ่งต่องปิดท้าย
 
 # เสียงที่จับคู่กับแต่ละสไตล์: (ชื่อเสียง Edge, ปรับระดับเสียง)
 # เสียงเด็กของภาษาไทยไม่มีให้โดยตรง จึงจำลองด้วยการยกระดับเสียง
@@ -106,14 +106,17 @@ def thai_number_to_words(number: int) -> str:
 	return str(number)
 
 
-def time_phrase(lang: str, hour: int, minute: int) -> str:
-	"""ประโยคขานเวลาในแต่ละภาษา"""
+def time_phrase(lang: str, hour: int, minute: int, final: bool = True) -> str:
+	"""ประโยคขานเวลาในแต่ละภาษา
+	final=False → ไม่ปิดท้ายด้วยจุด (มีข้อความตามมา) เพราะจุดทำให้เสียง AI หยุดนานเกือบ 1 วินาที
+	"""
 	if lang == "en":
 		h12 = hour % 12 or 12
 		ampm = "AM" if hour < 12 else "PM"
-		return f"The time is now {h12}:{minute:02d} {ampm}."
+		return f"The time is now {h12}:{minute:02d} {ampm}" + ("." if final else "")
 	if lang == "zh":
-		return f"现在时间，{hour}点整。" if minute == 0 else f"现在时间，{hour}点{minute}分。"
+		phrase = f"现在时间，{hour}点整" if minute == 0 else f"现在时间，{hour}点{minute}分"
+		return phrase + ("。" if final else "")
 	hour_word = thai_number_to_words(hour)
 	if minute == 0:
 		return f"ขณะนี้เวลา {hour_word}นาฬิกาตรง"
@@ -166,6 +169,8 @@ def normalize_schedule_item(item: dict) -> dict:
 	if "speak_text" not in item:
 		item["speak_text"] = bool(item.get("voice_announce", True))
 	item.setdefault("voice_style", "")
+	item.setdefault("chime_style", "")    # ว่าง = ใช้แบบเสียงติ่งต่องเริ่มต้นของระบบ
+	item.setdefault("chime_length", "")
 	return item
 
 
@@ -213,7 +218,8 @@ def build_segments(langs, label="", hour=None, minute=None, include_time=False, 
 
 	อ่านเป็นรอบ: แต่ละรอบอ่านทุกภาษาที่ยังเหลือรอบ ตามลำดับที่จัดไว้ เช่น
 	ไทย×2, อังกฤษ×1, จีน×2 → รอบ 1: ไทย → อังกฤษ → จีน, รอบ 2: ไทย → จีน
-	ขานเวลากับข้อความแยกเป็นคนละท่อน เพื่อเว้นจังหวะหายใจแบบผู้ประกาศ
+	ขานเวลา + ข้อความ เป็นประโยคเดียวต่อภาษา ให้เสียง AI เว้นวรรคเองตามธรรมชาติ
+	(ถ้าแยกไฟล์ จะเกิดช่วงเงียบท้ายไฟล์ + เวลาโหลดไฟล์ถัดไป ทำให้หน่วงนาน)
 	"""
 	entries = []
 	for entry in normalize_langs(langs):
@@ -223,31 +229,32 @@ def build_segments(langs, label="", hour=None, minute=None, include_time=False, 
 		text = entry["text"].strip()
 		if not text and entry["code"] == "th":
 			text = (label or "").strip()
+		has_text = bool(include_text and text)
 		parts = []
 		if include_time and hour is not None:
-			parts.append(time_phrase(lang, hour, minute or 0))
-		if include_text and text:
+			parts.append(time_phrase(lang, hour, minute or 0, final=not has_text))
+		if has_text:
 			parts.append(text)
 		if parts:
-			entries.append((parts, lang, entry["repeat"]))
+			# คั่นขานเวลากับข้อความด้วยจุลภาค → เสียง AI หยุดหายใจสั้น ๆ แบบผู้ประกาศ (ไม่ใช่หยุดยาวแบบจบประโยค)
+			joiner = {"zh": "，"}.get(lang, ", ")
+			sentence = joiner.join(parts)
+			entries.append((sentence, lang, entry["repeat"]))
 
 	segments = []
 	rounds = max((repeat for _, _, repeat in entries), default=0)
 	for round_no in range(rounds):
 		first_in_round = True
-		for parts, lang, repeat in entries:
+		for sentence, lang, repeat in entries:
 			if repeat <= round_no:
 				continue
-			for i, part in enumerate(parts):
-				if not segments:
-					gap = 0
-				elif i > 0:
-					gap = GAP_TIME_TO_TEXT
-				elif first_in_round:
-					gap = GAP_BETWEEN_ROUNDS
-				else:
-					gap = GAP_BETWEEN_LANGS
-				segments.append((part, lang, gap))
+			if not segments:
+				gap = 0
+			elif first_in_round:
+				gap = GAP_BETWEEN_ROUNDS
+			else:
+				gap = GAP_BETWEEN_LANGS
+			segments.append((sentence, lang, gap))
 			first_in_round = False
 	return segments
 
@@ -255,6 +262,54 @@ def build_segments(langs, label="", hour=None, minute=None, include_time=False, 
 # ---------------------------------------------------------------- ตัวสร้างเสียง
 
 _PHRASE_SPLIT_RE = re.compile(r"(?<=[\s。，,.!?！？;；])")
+
+# เสียง AI จะมีความเงียบท้ายไฟล์ราว 0.66–1.2 วินาที (วัดจริงทุกเสียง) ทำให้รอยต่อระหว่างภาษาเว้นนานเกินไป
+# จึงตัดหางทิ้งตามภาษา ให้เหลือหางเสียงอย่างน้อย ~0.2 วินาทีเสมอ (ไม่มีทางตัดโดนคำพูด)
+_TAIL_TRIM_SEC = {"th": 0.75, "en": 0.75, "zh": 0.45}
+
+_MP3_BITRATES = {
+	1: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320],   # MPEG-1 Layer III
+	2: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],       # MPEG-2/2.5 Layer III
+}
+_MP3_RATES = {3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [11025, 12000, 8000]}
+
+
+def _trim_mp3_tail(data, seconds):
+	"""ตัดเฟรมท้ายไฟล์ MP3 ออกตามจำนวนวินาที (ตัดที่ขอบเฟรม ไม่ต้องถอดรหัสเสียง)
+	ถ้าอ่านโครงสร้างไฟล์ไม่ได้ จะคืนไฟล์เดิมโดยไม่แตะ
+	"""
+	if seconds <= 0 or len(data) < 4:
+		return data
+	pos = 0
+	if data[:3] == b"ID3" and len(data) > 10:   # ข้าม ID3 tag
+		pos = 10 + ((data[6] << 21) | (data[7] << 14) | (data[8] << 7) | data[9])
+	frames = []   # (ตำแหน่งสิ้นสุดเฟรม, ความยาวเฟรมเป็นวินาที)
+	while pos + 4 <= len(data):
+		b1, b2 = data[pos + 1], data[pos + 2]
+		if data[pos] != 0xFF or (b1 & 0xE0) != 0xE0:
+			break
+		version, layer = (b1 >> 3) & 3, (b1 >> 1) & 3
+		br_idx, sr_idx, pad = (b2 >> 4) & 0xF, (b2 >> 2) & 3, (b2 >> 1) & 1
+		if layer != 1 or version == 1 or br_idx in (0, 15) or sr_idx == 3:
+			break
+		bitrate = _MP3_BITRATES[1 if version == 3 else 2][br_idx] * 1000
+		rate = _MP3_RATES[version][sr_idx]
+		size = (144 if version == 3 else 72) * bitrate // rate + pad
+		samples = 1152 if version == 3 else 576
+		if size <= 4 or pos + size > len(data):
+			break
+		pos += size
+		frames.append((pos, samples / rate))
+	if not frames or pos < len(data) - 4:
+		return data   # โครงสร้างไม่ใช่ MP3 ล้วน — ไม่แตะ
+	total = sum(d for _, d in frames)
+	keep_until = total - seconds
+	elapsed = 0.0
+	for end, dur in frames:
+		elapsed += dur
+		if elapsed >= keep_until:
+			return data[:end]
+	return data
 
 
 def _import_edge_tts():
@@ -325,7 +380,8 @@ class TTSEngine:
 	# ---- แคช ----
 	def _edge_cache_path(self, text, lang, style):
 		voice, pitch = self.resolve_voice(lang, style)
-		key = hashlib.sha1(f"{voice}|{pitch}|{self.rate_str()}|{text}".encode("utf-8")).hexdigest()
+		# "v3" = รุ่นของรูปแบบไฟล์ (ตัดความเงียบท้ายแล้ว) — เปลี่ยนรุ่นเพื่อให้สร้างไฟล์เก่าใหม่อัตโนมัติ
+		key = hashlib.sha1(f"v3|{voice}|{pitch}|{self.rate_str()}|{text}".encode("utf-8")).hexdigest()
 		return os.path.join(self.cache_dir, f"{lang}_{key}.mp3")
 
 	def _fallback_cache_path(self, text, lang):
@@ -409,13 +465,18 @@ class TTSEngine:
 		except ImportError:
 			return False
 
+		trim = _TAIL_TRIM_SEC.get(voice[:2].lower(), 0.45)
+
 		async def synth_bytes(chunks):
 			data = bytearray()
 			for chunk in chunks:
 				comm = edge_tts.Communicate(chunk, voice, rate=self.rate_str(), pitch=pitch)
+				part = bytearray()
 				async for msg in comm.stream():
 					if msg.get("type") == "audio":
-						data.extend(msg["data"])
+						part.extend(msg["data"])
+				# ตัดความเงียบท้ายของแต่ละท่อน → รอยต่อเป็นธรรมชาติ ไม่เว้นนาน
+				data.extend(_trim_mp3_tail(bytes(part), trim))
 			return bytes(data)
 
 		def write(chunks):

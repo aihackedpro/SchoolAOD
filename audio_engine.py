@@ -8,6 +8,7 @@ from paths import data_path
 from config_manager import load_config
 from tts_engine import (TTSEngine, build_segments, prepare_langs, default_langs, LANG_NAME,
 						GAP_AFTER_CHIME, GAP_BEFORE_SOUND)
+from chimes import chime_path
 
 
 def parse_item_time(item):
@@ -141,7 +142,17 @@ class AudioEngine(QObject):
 			"label": item.get("label", "อ๊อดแจ้งเวลา"),
 			"langs": item.get("langs"),
 			"style": item.get("voice_style") or None,
+			"chime_style": item.get("chime_style") or "",
+			"chime_length": item.get("chime_length") or "",
 		}
+
+	def resolve_chime(self, style="", length=""):
+		"""ไฟล์ติ่งต่องที่ใช้จริง: ค่าของรายการนั้น ถ้าไม่ได้ตั้ง → ค่าเริ่มต้นของระบบ"""
+		return chime_path(style or self.config.get("chime_style", "classic"),
+						  length or self.config.get("chime_length", "medium"))
+
+	def play_chime_preview(self, style="", length=""):
+		self.play_sequence([self.resolve_chime(style, length)], label="ตัวอย่างเสียงติ่งต่อง")
 
 	def play_schedule_item(self, item, hour=None, minute=None, label=None):
 		spec = self.spec_from_item(item, hour, minute)
@@ -165,8 +176,10 @@ class AudioEngine(QObject):
 
 	def _build_chain_worker(self, spec, label):
 		files, gaps = [], []
-		if spec.get("pre_chime", True):
-			files.append("chime.mp3")
+		chime = self.resolve_chime(spec.get("chime_style", ""), spec.get("chime_length", ""))
+		has_pre = bool(spec.get("pre_chime", True))
+		if has_pre:
+			files.append(chime)
 			gaps.append(0)
 
 		now = datetime.now()
@@ -187,7 +200,7 @@ class AudioEngine(QObject):
 			if not path:
 				print(f"[AudioEngine] สร้างเสียง {LANG_NAME.get(lang, lang)} ไม่ได้ (ออฟไลน์และยังไม่เคยแคช): {text[:40]}")
 			files.append(path)   # ไฟล์ว่าง = ข้าม แต่ยังรักษาจังหวะเว้นไว้
-			gaps.append(GAP_AFTER_CHIME if i == 0 and files[:1] == ["chime.mp3"] else gap)
+			gaps.append(GAP_AFTER_CHIME if i == 0 and has_pre else gap)
 
 		# เสียงต่อท้ายและติ่งต่องปิดท้าย เล่นหลังพูดครบทุกรอบแล้วเท่านั้น
 		custom = spec.get("custom_sound")
@@ -195,7 +208,7 @@ class AudioEngine(QObject):
 			files.append(custom)
 			gaps.append(GAP_BEFORE_SOUND)
 		if spec.get("post_chime", True):
-			files.append("chime.mp3")
+			files.append(chime)
 			gaps.append(GAP_BEFORE_SOUND)
 
 		self._chain_ready.emit(files, label, gaps)

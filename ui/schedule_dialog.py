@@ -6,7 +6,35 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QTime
 from tts_engine import VOICE_STYLES, normalize_langs
+from chimes import CHIME_STYLES, CHIME_LENGTHS
 from ui.language_widget import LanguageSequenceWidget
+
+
+def build_chime_picker(style="", length="", preview=None, allow_default=True):
+	"""แถวเลือกเสียงติ่งต่อง: [แบบ] [ความยาว] [▶️ ฟัง] — คืน (layout, combo แบบ, combo ความยาว)"""
+	row = QHBoxLayout()
+	combo_style = QComboBox()
+	combo_length = QComboBox()
+	if allow_default:
+		combo_style.addItem("⚙️ ตามค่าเริ่มต้นของระบบ", "")
+		combo_length.addItem("⚙️ ตามค่าเริ่มต้น", "")
+	for key, name in CHIME_STYLES:
+		combo_style.addItem(name, key)
+	for key, name in CHIME_LENGTHS:
+		combo_length.addItem(name, key)
+	combo_style.setCurrentIndex(max(0, combo_style.findData(style)))
+	combo_length.setCurrentIndex(max(0, combo_length.findData(length)))
+	combo_style.setMinimumWidth(230)
+	row.addWidget(combo_style)
+	row.addWidget(combo_length)
+	if preview:
+		btn = QPushButton("▶️ ฟัง")
+		btn.setProperty("class", "secondary-btn")
+		btn.setCursor(Qt.PointingHandCursor)
+		btn.clicked.connect(lambda: preview(combo_style.currentData() or "", combo_length.currentData() or ""))
+		row.addWidget(btn)
+	row.addStretch()
+	return row, combo_style, combo_length
 
 
 def _save_with_translation(dialog):
@@ -47,7 +75,7 @@ def parse_hms(time_str: str):
 
 
 class ScheduleFormDialog(QDialog):
-	def __init__(self, sounds_dir, item_data=None, parent=None, preview_callback=None):
+	def __init__(self, sounds_dir, item_data=None, parent=None, preview_callback=None, chime_preview=None):
 		super().__init__(parent)
 		self.sounds_dir = sounds_dir
 		self.item_data = item_data or {}
@@ -126,7 +154,12 @@ class ScheduleFormDialog(QDialog):
 		self.chk_post_chime = QCheckBox("5️⃣ เล่นเสียงติ่งต่องปิดท้าย (Post-Chime)")
 		self.chk_post_chime.setChecked(self.item_data.get("post_chime", True))
 
+		chime_row, self.combo_chime_style, self.combo_chime_length = build_chime_picker(
+			self.item_data.get("chime_style", ""), self.item_data.get("chime_length", ""), chime_preview)
+		chime_row.insertWidget(0, QLabel("      🎵 แบบเสียงติ่งต่อง (หน้า/ท้าย):"))
+
 		layout_audio.addWidget(self.chk_pre_chime)
+		layout_audio.addLayout(chime_row)
 		layout_audio.addWidget(self.chk_voice)
 		layout_audio.addWidget(self.chk_speak_text)
 		layout_audio.addLayout(row_sound)
@@ -219,6 +252,8 @@ class ScheduleFormDialog(QDialog):
 			"enabled": self.item_data.get("enabled", True),
 			"langs": normalize_langs(self.lang_widget.get_langs()),
 			"voice_style": self.combo_style.currentData() or "",
+			"chime_style": self.combo_chime_style.currentData() or "",
+			"chime_length": self.combo_chime_length.currentData() or "",
 		}
 
 

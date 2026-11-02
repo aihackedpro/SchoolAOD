@@ -13,7 +13,7 @@ from PySide6.QtCore import Qt, QTimer, QUrl, QPropertyAnimation, QEasingCurve, Q
 from PySide6.QtGui import QGuiApplication, QDesktopServices, QIcon, QAction
 from ui.themes import get_stylesheet, normalize_theme_key, THEME_ORDER, BUTTON_COLORS
 from ui.components import AnimatedToggle, ToastNotification
-from ui.schedule_dialog import ScheduleFormDialog, LanguageEditDialog
+from ui.schedule_dialog import ScheduleFormDialog, LanguageEditDialog, build_chime_picker
 from ui.language_widget import LanguageSequenceWidget
 from sound_db import SoundDatabase
 from config_manager import load_config, save_config
@@ -852,7 +852,8 @@ class MainWindow(QMainWindow):
 
 	def add_schedule_dialog(self):
 		try:
-			dialog = ScheduleFormDialog(self.audio.sounds_dir, parent=self, preview_callback=self._preview_dialog_item)
+			dialog = ScheduleFormDialog(self.audio.sounds_dir, parent=self, preview_callback=self._preview_dialog_item,
+										chime_preview=self.audio.play_chime_preview)
 			if dialog.exec() == QDialog.Accepted:
 				new_data = dialog.get_data()
 				new_data["id"] = str(len(self.scheduler.schedules) + 1)
@@ -867,7 +868,8 @@ class MainWindow(QMainWindow):
 			if 0 <= index < len(self.scheduler.schedules):
 				current_data = self.scheduler.schedules[index]
 				dialog = ScheduleFormDialog(self.audio.sounds_dir, item_data=current_data, parent=self,
-											preview_callback=self._preview_dialog_item)
+											preview_callback=self._preview_dialog_item,
+											chime_preview=self.audio.play_chime_preview)
 				if dialog.exec() == QDialog.Accepted:
 					updated_data = dialog.get_data()
 					updated_data["id"] = current_data.get("id", str(index + 1))
@@ -1017,6 +1019,11 @@ class MainWindow(QMainWindow):
 		opt.addWidget(self.combo_ann_style)
 		layout.addLayout(opt)
 
+		chime_row, self.combo_ann_chime, self.combo_ann_chime_len = build_chime_picker(
+			preview=self.audio.play_chime_preview)
+		chime_row.insertWidget(0, QLabel("🎵 เสียงติ่งต่อง:"))
+		layout.addLayout(chime_row)
+
 		act = QHBoxLayout()
 		btn_announce = QPushButton("📢 ประกาศทันที")
 		btn_announce.setProperty("class", "primary-btn")
@@ -1058,6 +1065,8 @@ class MainWindow(QMainWindow):
 			"label": "📢 ประกาศเสียงตามสาย",
 			"langs": langs,
 			"style": self.combo_ann_style.currentData() or None,
+			"chime_style": self.combo_ann_chime.currentData() or "",
+			"chime_length": self.combo_ann_chime_len.currentData() or "",
 		})
 		order = " → ".join(f"{e['code'].upper()}" + (f"×{e['repeat']}" if e["repeat"] > 1 else "")
 						   for e in langs if e["enabled"])
@@ -1114,6 +1123,21 @@ class MainWindow(QMainWindow):
 		layout.setContentsMargins(20, 16, 20, 16)
 		scroll.setWidget(content)
 		outer.addWidget(scroll)
+
+		# ---- เสียงติ่งต่องเริ่มต้น ----
+		chime_box = QGroupBox("🎵 เสียงติ่งต่องเริ่มต้น (10 แบบ × 3 ความยาว)")
+		chime_layout = QVBoxLayout(chime_box)
+		chime_row, self.combo_chime_style, self.combo_chime_length = build_chime_picker(
+			self.config.get("chime_style", "classic"), self.config.get("chime_length", "medium"),
+			preview=self.audio.play_chime_preview, allow_default=False)
+		self.combo_chime_style.currentIndexChanged.connect(self.on_default_chime_changed)
+		self.combo_chime_length.currentIndexChanged.connect(self.on_default_chime_changed)
+		chime_layout.addLayout(chime_row)
+		chime_note = QLabel("ใช้กับทุกรายการที่ตั้งเป็น 'ตามค่าเริ่มต้น' • เลือกแบบเฉพาะของแต่ละคาบได้ที่ปุ่ม ✏️ ในแท็บจัดการตารางเวลา")
+		chime_note.setProperty("class", "muted")
+		chime_note.setWordWrap(True)
+		chime_layout.addWidget(chime_note)
+		layout.addWidget(chime_box)
 
 		# ---- ระบบเสียง AI ----
 		voice_box = QGroupBox("🎙️ ระบบเสียง AI (Neural Voice) — ใช้ประกาศทุกภาษา")
@@ -1226,6 +1250,11 @@ class MainWindow(QMainWindow):
 		save_config(self.config)
 		self.refresh_voice_status()
 		self._precache_timer.start()
+
+	def on_default_chime_changed(self, _):
+		self.config["chime_style"] = self.combo_chime_style.currentData()
+		self.config["chime_length"] = self.combo_chime_length.currentData()
+		save_config(self.config)
 
 	def on_voice_style_changed(self, _):
 		self.config["tts_style"] = self.combo_style.currentData()
