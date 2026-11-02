@@ -10,8 +10,8 @@ from PySide6.QtWidgets import (
 	QWidget, QFrame, QVBoxLayout, QHBoxLayout, QCheckBox, QLineEdit, QPlainTextEdit,
 	QSpinBox, QPushButton, QLabel, QStyle
 )
-from PySide6.QtCore import Qt, Signal, QObject, QEvent, QSize
-from tts_engine import LANG_NAME, LANG_LABEL, normalize_langs
+from PySide6.QtCore import Qt, Signal, QObject, QEvent, QSize, QLocale
+from tts_engine import LANG_NAME, LANG_LABEL, MAX_REPEAT, normalize_langs
 from translator import translate, detect_lang
 
 _PLACEHOLDER = {
@@ -23,6 +23,51 @@ _PLACEHOLDER = {
 
 class _TranslateBridge(QObject):
 	done = Signal(dict, str)   # {code: คำแปล}, ข้อความ error
+
+
+class RepeatControl(QWidget):
+	"""ตัวเลือกจำนวนรอบ [−] 2 [+] — ปุ่มใหญ่กดง่าย พิมพ์ตัวเลขได้
+	บังคับใช้เลขอารบิก: Windows ภาษาไทยทำให้ช่องตัวเลขแสดงเลขไทย (๑) และพิมพ์เลข 1-9 ไม่ได้
+	"""
+
+	def __init__(self, value=1, parent=None):
+		super().__init__(parent)
+		row = QHBoxLayout(self)
+		row.setContentsMargins(0, 0, 0, 0)
+		row.setSpacing(4)
+
+		self.spin = QSpinBox()
+		self.spin.setLocale(QLocale.c())
+		self.spin.setRange(1, MAX_REPEAT)
+		self.spin.setValue(value)
+		self.spin.setButtonSymbols(QSpinBox.NoButtons)
+		self.spin.setAlignment(Qt.AlignCenter)
+		self.spin.setFixedWidth(52)
+		self.spin.setToolTip(f"จำนวนรอบที่อ่านภาษานี้ (1–{MAX_REPEAT}) พิมพ์ตัวเลขได้")
+
+		self.btn_minus = self._step_button("−", -1)
+		self.btn_plus = self._step_button("+", 1)
+		lbl_pre, lbl_post = QLabel("อ่าน"), QLabel("รอบ")
+		row.addWidget(lbl_pre)
+		row.addWidget(self.btn_minus)
+		row.addWidget(self.spin)
+		row.addWidget(self.btn_plus)
+		row.addWidget(lbl_post)
+
+	def _step_button(self, text, delta):
+		btn = QPushButton(text)
+		btn.setFixedSize(34, 34)
+		btn.setCursor(Qt.PointingHandCursor)
+		btn.setStyleSheet("padding: 0px; font-size: 18px; font-weight: bold;")
+		btn.clicked.connect(lambda: self.spin.setValue(self.spin.value() + delta))
+		return btn
+
+	def value(self):
+		self.spin.interpretText()   # ใช้ค่าที่พิมพ์ค้างไว้ด้วย แม้ยังไม่กด Enter
+		return self.spin.value()
+
+	def setValue(self, value):
+		self.spin.setValue(value)
 
 
 class LanguageRow(QFrame):
@@ -53,12 +98,7 @@ class LanguageRow(QFrame):
 			self.edit.editingFinished.connect(lambda: self.text_committed.emit(self))
 		self.edit.setPlaceholderText(_PLACEHOLDER[self.code])
 
-		self.spin = QSpinBox()
-		self.spin.setRange(1, 5)
-		self.spin.setValue(entry["repeat"])
-		self.spin.setPrefix("อ่าน ")
-		self.spin.setSuffix(" รอบ")
-		self.spin.setToolTip("จำนวนรอบที่จะอ่านภาษานี้ (1 = ไม่ทวน)")
+		self.spin = RepeatControl(entry["repeat"])
 
 		row.addWidget(self.chk)
 		row.addWidget(self.edit, 1)
@@ -130,7 +170,8 @@ class LanguageSequenceWidget(QWidget):
 
 		hint_text = "ติ๊กภาษาที่ต้องการให้อ่าน • พิมพ์ภาษาไทยลงช่องไหนก็ได้ ระบบแปลเป็นภาษาของช่องนั้นให้เอง"
 		if reorderable:
-			hint_text += " • ระบบอ่านจากแถวบนลงล่าง ใช้ปุ่มลูกศรสลับลำดับ"
+			hint_text += " • อ่านจากแถวบนลงล่าง ใช้ปุ่มลูกศรสลับลำดับ"
+		hint_text += " • อ่านเป็นรอบ: รอบแรกอ่านครบทุกภาษาก่อน แล้วค่อยวนรอบถัดไปเฉพาะภาษาที่ตั้งไว้หลายรอบ"
 		hint = QLabel(hint_text)
 		hint.setProperty("class", "muted")
 		hint.setWordWrap(True)

@@ -6,7 +6,8 @@ from PySide6.QtCore import QUrl, QObject, Signal, QTimer
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QAudioSink, QAudioFormat
 from paths import data_path
 from config_manager import load_config
-from tts_engine import TTSEngine, build_segments, prepare_langs, default_langs, LANG_NAME
+from tts_engine import (TTSEngine, build_segments, prepare_langs, default_langs, LANG_NAME,
+						GAP_AFTER_CHIME, GAP_BEFORE_SOUND)
 
 
 def parse_item_time(item):
@@ -35,7 +36,7 @@ class AudioEngine(QObject):
 	live_stream_stopped = Signal()          # วางสาย/จบสตรีม
 	# ---- ประกาศด้วยเสียง AI หลายภาษา ----
 	announce_requested = Signal(dict)       # ขอประกาศ (รับได้จากทุกเธรด เช่น รีโมท)
-	_chain_ready = Signal(object, str)      # เธรดเบื้องหลังสร้างเสียงเสร็จ → ส่งรายการไฟล์มาเล่นบน main thread
+	_chain_ready = Signal(object, str, object)  # เธรดเบื้องหลังสร้างเสียงเสร็จ → (ไฟล์, ชื่อ, จังหวะเว้น) มาเล่นบน main thread
 	cache_progress = Signal(int, int)       # เตรียมเสียงล่วงหน้า: ทำไปแล้ว / ทั้งหมด
 	cache_finished = Signal(int, int)       # เตรียมเสียงเสร็จ: สำเร็จ / ทั้งหมด
 
@@ -72,8 +73,10 @@ class AudioEngine(QObject):
 		self.audio_output.setVolume(1.0)
 
 		self.playlist = []
+		self.gaps = []
 		self.current_index = 0
 		self.is_playing = False
+		self._seq_id = 0   # เลขชุดเสียงปัจจุบัน — กันตัวจับเวลาของชุดเก่าไปเล่นแทรกชุดใหม่
 		self.player.mediaStatusChanged.connect(self._on_media_status_changed)
 
 	def set_volume(self, volume_percent: int):
@@ -82,6 +85,7 @@ class AudioEngine(QObject):
 
 	def stop_all(self):
 		"""หยุดเสียงที่กำลังเล่นทั้งหมดทันที (ไม่กระทบการพูดสดผ่านไมค์)"""
+		self._seq_id += 1
 		self.playlist = []
 		self.current_index = 0
 		if self.is_playing:
@@ -89,22 +93,30 @@ class AudioEngine(QObject):
 			self.player.stop()
 			self.sequence_finished.emit()
 
-	def play_sequence(self, sound_files: list, label="อ๊อดแจ้งเวลา"):
+	def play_sequence(self, sound_files: list, label="อ๊อดแจ้งเวลา", gaps=None):
+		"""เล่นไฟล์ต่อกัน — gaps[i] = จังหวะเว้น (ms) ก่อนเล่นไฟล์ลำดับที่ i"""
 		# ไมค์สดมาก่อนเสมอ: ถ้ากำลังพูดสดอยู่ ให้ Drop เสียงขาน/อ๊อดที่ชนช่วงนี้ทิ้ง
 		if self.live_active:
 			print(f"[AudioEngine] Drop เสียง '{label}' เพราะมีการพูดสดผ่านไมค์อยู่")
 			return False
 
-		valid_files = []
-		for file in sound_files:
+		valid_files, valid_gaps = [], []
+		pending_gap = 0
+		for i, file in enumerate(sound_files):
+			gap = gaps[i] if gaps and i < len(gaps) else 100
 			if not file:
+				pending_gap = max(pending_gap, gap)
 				continue
 			path = file if os.path.isabs(file) else os.path.abspath(os.path.join(self.sounds_dir, file))
 			if os.path.exists(path):
 				valid_files.append(path)
+				valid_gaps.append(max(gap, pending_gap))
+				pending_gap = 0
 
 		if valid_files:
+			self._seq_id += 1
 			self.playlist = valid_files
+			self.gaps = valid_gaps
 			self.current_index = 0
 			self.is_playing = True
 			self.sequence_started.emit(label)
@@ -152,9 +164,10 @@ class AudioEngine(QObject):
 		return True
 
 	def _build_chain_worker(self, spec, label):
-		files = []
+		files, gaps = [], []
 		if spec.get("pre_chime", True):
 			files.append("chime.mp3")
+			gaps.append(0)
 
 		now = datetime.now()
 		hour = spec.get("hour", now.hour)
@@ -169,23 +182,26 @@ class AudioEngine(QObject):
 			include_time=spec.get("voice_announce", True),
 			include_text=spec.get("speak_text", True),
 		)
-		for text, lang in segments:
+		for i, (text, lang, gap) in enumerate(segments):
 			path = self.tts.synthesize(text, lang, spec.get("style"))
-			if path:
-				files.append(path)
-			else:
+			if not path:
 				print(f"[AudioEngine] สร้างเสียง {LANG_NAME.get(lang, lang)} ไม่ได้ (ออฟไลน์และยังไม่เคยแคช): {text[:40]}")
+			files.append(path)   # ไฟล์ว่าง = ข้าม แต่ยังรักษาจังหวะเว้นไว้
+			gaps.append(GAP_AFTER_CHIME if i == 0 and files[:1] == ["chime.mp3"] else gap)
 
+		# เสียงต่อท้ายและติ่งต่องปิดท้าย เล่นหลังพูดครบทุกรอบแล้วเท่านั้น
 		custom = spec.get("custom_sound")
 		if custom and custom != "ไม่มี":
 			files.append(custom)
+			gaps.append(GAP_BEFORE_SOUND)
 		if spec.get("post_chime", True):
 			files.append("chime.mp3")
+			gaps.append(GAP_BEFORE_SOUND)
 
-		self._chain_ready.emit(files, label)
+		self._chain_ready.emit(files, label, gaps)
 
-	def _on_chain_ready(self, files, label):
-		self.play_sequence(files, label=label)
+	def _on_chain_ready(self, files, label, gaps):
+		self.play_sequence(files, label=label, gaps=gaps)
 
 	# ---------------------------------------------------------------- เตรียมเสียงล่วงหน้า (ใช้ออฟไลน์)
 	def _schedule_jobs(self, schedules, allow_network=False):
@@ -199,7 +215,7 @@ class AudioEngine(QObject):
 				langs, label=spec["label"], hour=spec["hour"], minute=spec["minute"],
 				include_time=spec["voice_announce"], include_text=spec["speak_text"],
 			)
-			for text, lang in segments:
+			for text, lang, _gap in segments:
 				key = (text, lang, spec["style"])
 				if key not in seen:
 					seen.add(key)
@@ -271,6 +287,7 @@ class AudioEngine(QObject):
 		"""เริ่มพูดสด: ไมค์มาก่อน → หยุดเสียงที่กำลังเล่นทันที แล้วเปิดช่องเล่นเสียงสตรีม"""
 		self.live_active = True
 		self.is_playing = False
+		self._seq_id += 1
 		self.playlist = []
 		self.player.stop()  # Drop เสียงขาน/อ๊อดที่กำลังเล่นอยู่
 
@@ -316,7 +333,9 @@ class AudioEngine(QObject):
 		if status == QMediaPlayer.MediaStatus.EndOfMedia:
 			self.current_index += 1
 			if self.current_index < len(self.playlist):
-				QTimer.singleShot(100, self._play_current)
+				gap = self.gaps[self.current_index] if self.current_index < len(self.gaps) else 100
+				seq = self._seq_id
+				QTimer.singleShot(max(50, int(gap)), lambda: self._play_current() if seq == self._seq_id else None)
 			else:
 				self.is_playing = False
 				self.sequence_finished.emit()

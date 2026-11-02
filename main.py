@@ -12,7 +12,7 @@ if sys.stderr is None:
 import time
 import socket
 from PySide6.QtWidgets import QApplication, QMessageBox
-from PySide6.QtCore import QSharedMemory
+from PySide6.QtCore import QSharedMemory, QLocale
 
 
 def wait_server_ready(port, timeout=15):
@@ -37,6 +37,9 @@ import paths
 def main():
 	app = QApplication(sys.argv)
 	app.setQuitOnLastWindowClosed(False)  # ไม่ปิดโปรแกรมเมื่อปิดหน้าต่าง ให้ย่อลง System Tray
+
+	# ใช้เลขอารบิกในช่องตัวเลข/เวลาเสมอ — Windows ภาษาไทยทำให้แสดงเลขไทย (๑ ๒) และพิมพ์เลข 1-9 ไม่ได้
+	QLocale.setDefault(QLocale(QLocale.English, QLocale.UnitedStates))
 
 	# ป้องกันการเปิดโปรแกรมซ้ำ
 	shared_mem = QSharedMemory("SchoolAOD_Single_Instance_Lock_v1")

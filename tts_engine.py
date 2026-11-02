@@ -37,6 +37,27 @@ VOICE_STYLES = [
 ]
 STYLE_NAME = dict(VOICE_STYLES)
 
+# ความเร็วการพูด (key, ชื่อที่แสดง, % ที่ส่งให้เสียง AI)
+# ค่า 0% ของเสียง AI คือความเร็วการพูดคุยทั่วไป ซึ่งเร็วกว่าจังหวะผู้ประกาศเสียงตามสาย
+# จึงตั้ง "ปกติ" ให้ช้าลงเล็กน้อยเพื่อให้ฟังชัดและเป็นธรรมชาติแบบการประกาศ
+SPEEDS = [
+	("slower", "🐢 ช้ามาก", -30),
+	("slow", "ช้า", -20),
+	("normal", "ปกติ (จังหวะผู้ประกาศ — แนะนำ)", -10),
+	("fast", "เร็ว", 0),
+	("faster", "🐇 เร็วมาก", 12),
+]
+SPEED_RATE = {key: rate for key, _, rate in SPEEDS}
+
+MAX_REPEAT = 10
+
+# จังหวะเว้นระหว่างเสียง (มิลลิวินาที) ให้ฟังเป็นธรรมชาติแบบผู้ประกาศ
+GAP_AFTER_CHIME = 400
+GAP_TIME_TO_TEXT = 450    # ขานเวลา → ข้อความ (ภาษาเดียวกัน)
+GAP_BETWEEN_LANGS = 800   # เปลี่ยนภาษา
+GAP_BETWEEN_ROUNDS = 1200 # ขึ้นรอบใหม่
+GAP_BEFORE_SOUND = 800    # ก่อนเสียงต่อท้าย/ติ่งต่องปิดท้าย
+
 # เสียงที่จับคู่กับแต่ละสไตล์: (ชื่อเสียง Edge, ปรับระดับเสียง)
 # เสียงเด็กของภาษาไทยไม่มีให้โดยตรง จึงจำลองด้วยการยกระดับเสียง
 PRESETS = {
@@ -127,7 +148,7 @@ def normalize_langs(langs):
 			"code": code,
 			"enabled": bool(entry.get("enabled", False)),
 			"text": str(entry.get("text", "") or ""),
-			"repeat": max(1, min(5, repeat)),
+			"repeat": max(1, min(MAX_REPEAT, repeat)),
 		}
 		if entry.get("speak_as") in LANG_NAME:
 			item["speak_as"] = entry["speak_as"]   # ภาษาเสียงที่ใช้จริง (กรณีแปลไม่ได้ตอนออฟไลน์)
@@ -188,8 +209,13 @@ def prepare_langs(langs, label="", allow_network=True):
 
 
 def build_segments(langs, label="", hour=None, minute=None, include_time=False, include_text=True):
-	"""สร้างลำดับประโยคที่จะพูด [(ข้อความ, ภาษา), ...] ตามลำดับภาษาและจำนวนรอบทวน"""
-	segments = []
+	"""สร้างลำดับเสียงพูด [(ข้อความ, ภาษา, เว้นก่อนพูด ms), ...]
+
+	อ่านเป็นรอบ: แต่ละรอบอ่านทุกภาษาที่ยังเหลือรอบ ตามลำดับที่จัดไว้ เช่น
+	ไทย×2, อังกฤษ×1, จีน×2 → รอบ 1: ไทย → อังกฤษ → จีน, รอบ 2: ไทย → จีน
+	ขานเวลากับข้อความแยกเป็นคนละท่อน เพื่อเว้นจังหวะหายใจแบบผู้ประกาศ
+	"""
+	entries = []
 	for entry in normalize_langs(langs):
 		if not entry["enabled"]:
 			continue
@@ -197,17 +223,32 @@ def build_segments(langs, label="", hour=None, minute=None, include_time=False, 
 		text = entry["text"].strip()
 		if not text and entry["code"] == "th":
 			text = (label or "").strip()
-
 		parts = []
 		if include_time and hour is not None:
 			parts.append(time_phrase(lang, hour, minute or 0))
 		if include_text and text:
 			parts.append(text)
-		if not parts:
-			continue
+		if parts:
+			entries.append((parts, lang, entry["repeat"]))
 
-		sentence = ("" if lang == "zh" else " ").join(parts)
-		segments.extend([(sentence, lang)] * entry["repeat"])
+	segments = []
+	rounds = max((repeat for _, _, repeat in entries), default=0)
+	for round_no in range(rounds):
+		first_in_round = True
+		for parts, lang, repeat in entries:
+			if repeat <= round_no:
+				continue
+			for i, part in enumerate(parts):
+				if not segments:
+					gap = 0
+				elif i > 0:
+					gap = GAP_TIME_TO_TEXT
+				elif first_in_round:
+					gap = GAP_BETWEEN_ROUNDS
+				else:
+					gap = GAP_BETWEEN_LANGS
+				segments.append((part, lang, gap))
+			first_in_round = False
 	return segments
 
 
@@ -268,11 +309,8 @@ class TTSEngine:
 		return style if style in STYLE_NAME else "female"
 
 	def rate_str(self):
-		try:
-			rate = int(self.config.get("tts_rate", 0))
-		except (TypeError, ValueError):
-			rate = 0
-		return f"{max(-50, min(50, rate)):+d}%"
+		rate = SPEED_RATE.get(self.config.get("tts_speed", "normal"), SPEED_RATE["normal"])
+		return f"{rate:+d}%"
 
 	def resolve_voice(self, lang, style=None):
 		"""คืน (ชื่อเสียง, pitch) ที่จะใช้จริง — ค่าเสียงเฉพาะภาษาที่ผู้ใช้เลือกมาก่อนสไตล์"""

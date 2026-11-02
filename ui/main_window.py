@@ -20,7 +20,7 @@ from config_manager import load_config, save_config
 from remote_server import set_allow_voice
 from win_system import prevent_sleep
 from paths import resource_path
-from tts_engine import VOICE_STYLES, LANGUAGES, langs_summary, default_langs
+from tts_engine import VOICE_STYLES, LANGUAGES, SPEEDS, langs_summary, default_langs
 from updater import UpdateManager, can_self_update
 from version import APP_VERSION
 
@@ -37,8 +37,6 @@ VOICE_SAMPLES = {
 	"en": "Hello, this is a test of the school public announcement system.",
 	"zh": "大家好，这是学校广播系统的测试。",
 }
-
-SPEED_OPTIONS = [("🐢 ช้ามาก", -30), ("ช้า", -15), ("ปกติ", 0), ("เร็ว", 15), ("🐇 เร็วมาก", 30)]
 
 
 class _MainThreadInvoker(QObject):
@@ -1132,9 +1130,9 @@ class MainWindow(QMainWindow):
 
 		grid.addWidget(QLabel("ความเร็วการพูด:"), 1, 0)
 		self.combo_speed = QComboBox()
-		for name, value in SPEED_OPTIONS:
-			self.combo_speed.addItem(name, value)
-		self.combo_speed.setCurrentIndex(max(0, self.combo_speed.findData(int(self.config.get("tts_rate", 0)))))
+		for key, name, _rate in SPEEDS:
+			self.combo_speed.addItem(name, key)
+		self.combo_speed.setCurrentIndex(max(0, self.combo_speed.findData(self.config.get("tts_speed", "normal"))))
 		self.combo_speed.currentIndexChanged.connect(self.on_voice_speed_changed)
 		grid.addWidget(self.combo_speed, 1, 1)
 
@@ -1234,7 +1232,7 @@ class MainWindow(QMainWindow):
 		self._voice_settings_changed()
 
 	def on_voice_speed_changed(self, _):
-		self.config["tts_rate"] = int(self.combo_speed.currentData())
+		self.config["tts_speed"] = self.combo_speed.currentData()
 		self._voice_settings_changed()
 
 	def on_voice_override_changed(self, code):

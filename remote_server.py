@@ -203,7 +203,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 					<input type="checkbox" class="form-check-input m-0" ${l.enabled ? 'checked' : ''} onchange="annLangs[${i}].enabled=this.checked;renderLangs()">
 					<span class="flex-grow-1">${l.name}</span>
 					<select class="form-select form-select-sm bg-dark text-white" style="width:auto" onchange="annLangs[${i}].repeat=+this.value;renderLangs()">
-						${[1,2,3].map(n => `<option value="${n}" ${l.repeat === n ? 'selected' : ''}>${n === 1 ? 'อ่าน 1 รอบ' : 'ทวน ' + n + ' รอบ'}</option>`).join('')}
+						${[1,2,3,4,5].map(n => `<option value="${n}" ${l.repeat === n ? 'selected' : ''}>อ่าน ${n} รอบ</option>`).join('')}
 					</select>
 					<button class="btn btn-sm btn-outline-light py-0" ${i === 0 ? 'disabled' : ''} onclick="moveLang(${i},-1)">▲</button>
 					<button class="btn btn-sm btn-outline-light py-0" ${i === annLangs.length - 1 ? 'disabled' : ''} onclick="moveLang(${i},1)">▼</button>

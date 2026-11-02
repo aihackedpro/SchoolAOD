@@ -20,7 +20,7 @@ DEFAULT_CONFIG = {
 	"allow_remote_voice": True,
 	# ---- ระบบเสียง AI ----
 	"tts_style": "female",                                   # female / male / girl / boy
-	"tts_rate": 0,                                           # ความเร็วการพูด (%) -30 ถึง +30
+	"tts_speed": "normal",                                   # slower / slow / normal / fast / faster
 	"tts_voice_overrides": {"th": "", "en": "", "zh": ""},   # เลือกเสียงเฉพาะภาษา (ว่าง = ตามสไตล์)
 	"announce_templates": [],                                # ข้อความประกาศสำเร็จรูปที่ผู้ใช้บันทึกไว้
 	# ---- ระบบอัปเดต ----
