@@ -16,3 +16,4 @@ config.json
 sounds.db
 server_error.log
 voice_cache/
+translations.json
