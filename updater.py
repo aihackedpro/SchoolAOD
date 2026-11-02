@@ -14,6 +14,7 @@ import threading
 import urllib.request
 import zipfile
 from PySide6.QtCore import QObject, Signal
+from net import urlopen
 from paths import is_frozen
 from version import APP_VERSION, GITHUB_REPO, UPDATE_ASSET_NAME, is_newer
 
@@ -25,7 +26,7 @@ _HEADERS = {"Accept": "application/vnd.github+json", "User-Agent": f"SchoolAOD-U
 def fetch_latest_release(timeout=12):
 	"""ข้อมูล Release ล่าสุดบน GitHub (โยน exception ถ้าเชื่อมต่อไม่ได้)"""
 	req = urllib.request.Request(_API_LATEST, headers=_HEADERS)
-	with urllib.request.urlopen(req, timeout=timeout) as resp:
+	with urlopen(req, timeout=timeout) as resp:
 		data = json.loads(resp.read().decode("utf-8"))
 
 	asset = next((a for a in data.get("assets", []) if a.get("name") == UPDATE_ASSET_NAME), None)
@@ -87,7 +88,7 @@ class UpdateManager(QObject):
 			work_dir = tempfile.mkdtemp(prefix="SchoolAOD_update_")
 			zip_path = os.path.join(work_dir, UPDATE_ASSET_NAME)
 			req = urllib.request.Request(info["asset_url"], headers={"User-Agent": _HEADERS["User-Agent"]})
-			with urllib.request.urlopen(req, timeout=30) as resp, open(zip_path, "wb") as out:
+			with urlopen(req, timeout=30) as resp, open(zip_path, "wb") as out:
 				total = int(resp.headers.get("Content-Length") or info.get("asset_size") or 0)
 				done = 0
 				while True:

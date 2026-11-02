@@ -25,6 +25,9 @@ LANGUAGES = [
 ]
 LANG_NAME = {code: name for code, name, _ in LANGUAGES}
 LANG_FLAG = {code: flag for code, _, flag in LANGUAGES}
+# ป้ายสั้นสำหรับหน้าจอ Windows (Windows ไม่แสดงอีโมจิธงชาติ จะกลายเป็นตัวอักษร TH/GB/CN)
+LANG_SHORT = {"th": "ไทย", "en": "EN", "zh": "中文"}
+LANG_LABEL = {"th": "ไทย (TH)", "en": "English (EN)", "zh": "中文 (ZH)"}
 
 VOICE_STYLES = [
 	("female", "👩 เสียงผู้หญิง"),
@@ -120,12 +123,15 @@ def normalize_langs(langs):
 			repeat = int(entry.get("repeat", 1) or 1)
 		except (TypeError, ValueError):
 			repeat = 1
-		out.append({
+		item = {
 			"code": code,
 			"enabled": bool(entry.get("enabled", False)),
 			"text": str(entry.get("text", "") or ""),
 			"repeat": max(1, min(5, repeat)),
-		})
+		}
+		if entry.get("speak_as") in LANG_NAME:
+			item["speak_as"] = entry["speak_as"]   # ภาษาเสียงที่ใช้จริง (กรณีแปลไม่ได้ตอนออฟไลน์)
+		out.append(item)
 	for code, _, _ in LANGUAGES:
 		if code not in seen:
 			out.append({"code": code, "enabled": False, "text": "", "repeat": 1})
@@ -143,12 +149,42 @@ def normalize_schedule_item(item: dict) -> dict:
 
 
 def langs_summary(langs) -> str:
-	"""สรุปลำดับภาษาสำหรับแสดงในตาราง เช่น '🇹🇭 → 🇬🇧 ×2 → 🇨🇳'"""
+	"""สรุปลำดับภาษาสำหรับแสดงในตาราง เช่น 'ไทย → EN ×2 → 中文'"""
 	parts = []
 	for e in normalize_langs(langs):
 		if e["enabled"]:
-			parts.append(LANG_FLAG[e["code"]] + (f" ×{e['repeat']}" if e["repeat"] > 1 else ""))
-	return " → ".join(parts) if parts else "—"
+			parts.append(LANG_SHORT[e["code"]] + (f" ×{e['repeat']}" if e["repeat"] > 1 else ""))
+	return " → ".join(parts) if parts else "— ไม่อ่านข้อความ —"
+
+
+def prepare_langs(langs, label="", allow_network=True):
+	"""เตรียมข้อความแต่ละภาษาให้พร้อมพูด
+	- ช่องว่าง → ใช้ข้อความไทย/ชื่อคาบ แล้วแปลเป็นภาษาของช่องนั้น
+	- พิมพ์ภาษาไม่ตรงช่อง (เช่น พิมพ์ไทยในช่องจีน) → แปลเป็นภาษาของช่องให้อัตโนมัติ
+	- พิมพ์ภาษาตรงช่องอยู่แล้ว → อ่านตามที่พิมพ์ ไม่แปล
+	- แปลไม่ได้ (ออฟไลน์และไม่เคยแปลไว้) → พูดด้วยเสียงของภาษาที่พิมพ์มาจริง
+	allow_network=False → ใช้เฉพาะคำแปลที่จำไว้ในเครื่อง (ใช้ตอนคำนวณสถานะบนหน้าจอ)
+	"""
+	from translator import translate, detect_lang
+
+	out = normalize_langs(langs)
+	th_entry = next(e for e in out if e["code"] == "th")
+	source = th_entry["text"].strip() or (label or "").strip()
+
+	for entry in out:
+		entry.pop("speak_as", None)
+		if not entry["enabled"]:
+			continue
+		code = entry["code"]
+		text = entry["text"].strip()
+		if not text:
+			text = source
+		if text and detect_lang(text) != code:
+			text = translate(text, code, allow_network=allow_network) or text
+		entry["text"] = text
+		if text and detect_lang(text) != code:
+			entry["speak_as"] = detect_lang(text)
+	return out
 
 
 def build_segments(langs, label="", hour=None, minute=None, include_time=False, include_text=True):
@@ -157,9 +193,9 @@ def build_segments(langs, label="", hour=None, minute=None, include_time=False, 
 	for entry in normalize_langs(langs):
 		if not entry["enabled"]:
 			continue
-		lang = entry["code"]
+		lang = entry.get("speak_as") or entry["code"]
 		text = entry["text"].strip()
-		if not text and lang == "th":
+		if not text and entry["code"] == "th":
 			text = (label or "").strip()
 
 		parts = []
@@ -178,6 +214,17 @@ def build_segments(langs, label="", hour=None, minute=None, include_time=False, 
 # ---------------------------------------------------------------- ตัวสร้างเสียง
 
 _PHRASE_SPLIT_RE = re.compile(r"(?<=[\s。，,.!?！？;；])")
+
+
+def _import_edge_tts():
+	"""โหลด edge-tts และให้ใช้ชุดใบรับรองเดียวกับทั้งโปรแกรม (certifi + ใบรับรองของ Windows/proxy โรงเรียน)"""
+	import edge_tts
+	from net import ssl_context
+	for module_name in ("communicate", "voices"):
+		module = getattr(edge_tts, module_name, None)
+		if module is not None and hasattr(module, "_SSL_CTX"):
+			module._SSL_CTX = ssl_context()
+	return edge_tts
 
 
 def _split_phrases(text):
@@ -319,7 +366,7 @@ class TTSEngine:
 		"""
 		tmp = out_path + ".part"
 		try:
-			import edge_tts
+			edge_tts = _import_edge_tts()
 			from edge_tts.exceptions import NoAudioReceived
 		except ImportError:
 			return False
@@ -422,7 +469,7 @@ class TTSEngine:
 	def refresh_voices(self):
 		"""ดาวน์โหลดรายชื่อเสียงทั้งหมดจากอินเทอร์เน็ตมาเก็บไว้ (เรียกจากเธรดเบื้องหลัง)"""
 		try:
-			import edge_tts
+			edge_tts = _import_edge_tts()
 			raw = _run_coroutine(edge_tts.list_voices)
 			keep = []
 			for v in raw:

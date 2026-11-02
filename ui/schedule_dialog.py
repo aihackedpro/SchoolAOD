@@ -9,6 +9,31 @@ from tts_engine import VOICE_STYLES, normalize_langs
 from ui.language_widget import LanguageSequenceWidget
 
 
+def _save_with_translation(dialog):
+	"""บันทึกหลังแปลภาษาเสร็จ: ภาษาที่ติ๊กไว้แต่ยังว่าง/พิมพ์ผิดภาษา จะถูกแปลก่อนบันทึก (เพื่อใช้ออฟไลน์ได้)
+	ถ้าแปลไม่สำเร็จ (ไม่มีเน็ต) ก็ยังบันทึกได้ ระบบจะแปลให้อีกครั้งตอนเล่นเมื่อมีเน็ต
+	dialog ต้องมี: lang_widget, btn_save, lbl_save_status, _saving, _translate_attempted
+	"""
+	widget = dialog.lang_widget
+	if widget.is_busy() or (widget.needs_translation() and not dialog._translate_attempted):
+		dialog._saving = True
+		dialog.btn_save.setEnabled(False)
+		dialog.lbl_save_status.setText("⏳ กำลังแปลภาษาก่อนบันทึก...")
+		if not widget.is_busy():
+			dialog._translate_attempted = True
+			widget.translate_from_thai()
+		return
+	dialog.accept()
+
+
+def _on_save_translation_finished(dialog):
+	if dialog._saving:
+		dialog._saving = False
+		dialog.btn_save.setEnabled(True)
+		dialog.lbl_save_status.setText("")
+		_save_with_translation(dialog)
+
+
 def parse_hms(time_str: str):
 	"""แยกชั่วโมง นาที วินาที อย่างปลอดภัย 100%"""
 	try:
@@ -28,6 +53,7 @@ class ScheduleFormDialog(QDialog):
 		self.item_data = item_data or {}
 		self.preview_callback = preview_callback
 		self._saving = False
+		self._translate_attempted = False
 		self.setWindowTitle("⚙️ กำหนดรายละเอียดตารางเวลาอ๊อด")
 		self.resize(780, 820)
 
@@ -172,24 +198,11 @@ class ScheduleFormDialog(QDialog):
 			shutil.copy(file_path, os.path.join(self.sounds_dir, file_name))
 			self.refresh_sound_dropdown(selected_filename=file_name)
 
-	def _missing_translations(self):
-		return any(e["enabled"] and e["code"] != "th" and not e["text"] for e in self.lang_widget.get_langs())
-
 	def save(self):
-		"""ถ้าเลือกภาษาอังกฤษ/จีนไว้แต่ยังไม่มีคำแปล → แปลให้ก่อน แล้วค่อยบันทึก (เพื่อให้ใช้ออฟไลน์ได้)"""
-		if self._missing_translations() and self.lang_widget.thai_text():
-			self._saving = True
-			self.btn_save.setEnabled(False)
-			self.lbl_save_status.setText("⏳ กำลังแปลภาษาก่อนบันทึก...")
-			self.lang_widget.translate_from_thai()
-			return
-		self.accept()
+		_save_with_translation(self)
 
 	def _on_translation_finished(self, ok, error):
-		if self._saving:
-			self._saving = False
-			self.btn_save.setEnabled(True)
-			self.accept()
+		_on_save_translation_finished(self)
 
 	def get_data(self):
 		active_days = [code for code, chk in self.day_checkboxes.items() if chk.isChecked()]
@@ -207,3 +220,67 @@ class ScheduleFormDialog(QDialog):
 			"langs": normalize_langs(self.lang_widget.get_langs()),
 			"voice_style": self.combo_style.currentData() or "",
 		}
+
+
+class LanguageEditDialog(QDialog):
+	"""แก้ภาษาของรายการในตารางแบบเร็ว: ติ๊กภาษา / สลับลำดับ / จำนวนรอบ / สไตล์เสียง (เปิดจากคอลัมน์ภาษา)"""
+
+	def __init__(self, item, parent=None, preview_callback=None):
+		super().__init__(parent)
+		self.item = dict(item)
+		self.preview_callback = preview_callback
+		self._saving = False
+		self._translate_attempted = False
+		self.setWindowTitle(f"🌐 ภาษาประกาศ — {item.get('time', '')} {item.get('label', '')}")
+		self.resize(820, 420)
+
+		layout = QVBoxLayout(self)
+		title = QLabel(f"⏰ {item.get('time', '')}   {item.get('label', '')}")
+		title.setProperty("class", "title")
+		layout.addWidget(title)
+
+		self.lang_widget = LanguageSequenceWidget(
+			item.get("langs"),
+			multiline=False,
+			thai_source=lambda: self.item.get("label", ""),
+		)
+		self.lang_widget.set_thai_placeholder(item.get("label", ""))
+		self.lang_widget.translation_finished.connect(lambda ok, err: _on_save_translation_finished(self))
+		layout.addWidget(self.lang_widget)
+
+		row_style = QHBoxLayout()
+		row_style.addWidget(QLabel("🎙️ สไตล์เสียงผู้ประกาศ:"))
+		self.combo_style = QComboBox()
+		self.combo_style.addItem("⚙️ ตามค่าเริ่มต้นของระบบ", "")
+		for key, name in VOICE_STYLES:
+			self.combo_style.addItem(name, key)
+		self.combo_style.setCurrentIndex(max(0, self.combo_style.findData(item.get("voice_style", ""))))
+		row_style.addWidget(self.combo_style)
+		row_style.addStretch()
+		layout.addLayout(row_style)
+		layout.addStretch()
+
+		btn_box = QHBoxLayout()
+		self.lbl_save_status = QLabel("")
+		self.lbl_save_status.setProperty("class", "muted")
+		btn_box.addWidget(self.lbl_save_status, 1)
+		if preview_callback:
+			btn_preview = QPushButton("▶️ ทดลองฟัง")
+			btn_preview.setProperty("class", "secondary-btn")
+			btn_preview.clicked.connect(lambda: self.preview_callback(self.get_item()))
+			btn_box.addWidget(btn_preview)
+		btn_cancel = QPushButton("ยกเลิก")
+		btn_cancel.setProperty("class", "secondary-btn")
+		btn_cancel.clicked.connect(self.reject)
+		self.btn_save = QPushButton("💾 บันทึก")
+		self.btn_save.setProperty("class", "primary-btn")
+		self.btn_save.clicked.connect(lambda: _save_with_translation(self))
+		btn_box.addWidget(btn_cancel)
+		btn_box.addWidget(self.btn_save)
+		layout.addLayout(btn_box)
+
+	def get_item(self):
+		data = dict(self.item)
+		data["langs"] = normalize_langs(self.lang_widget.get_langs())
+		data["voice_style"] = self.combo_style.currentData() or ""
+		return data

@@ -1,11 +1,16 @@
-"""แปลข้อความประกาศ ไทย → อังกฤษ / จีน (ใช้อินเทอร์เน็ต)
-ลองผู้ให้บริการหลายเจ้าตามลำดับ ถ้าเจ้าแรกล่มหรือถูกจำกัดจำนวนครั้ง จะสลับไปเจ้าถัดไปเอง
-ผลการแปลถูกบันทึกไว้กับตารางเวลา จึงใช้งานแบบออฟไลน์ต่อได้
+"""แปลข้อความประกาศระหว่าง ไทย / อังกฤษ / จีน
+
+- ลองผู้ให้บริการหลายเจ้าตามลำดับ ถ้าเจ้าแรกล่มหรือถูกจำกัดจำนวนครั้ง จะสลับไปเจ้าถัดไปเอง
+- คำแปลทุกรายการถูกจำไว้ในเครื่อง (translations.json) → ข้อความเดิมแปลได้แม้ไม่มีอินเทอร์เน็ต
 """
 import json
+import os
 import re
+import threading
 import urllib.parse
 import urllib.request
+from net import urlopen
+from paths import data_path
 
 # รหัสภาษาในระบบ → รหัสของบริการแปล
 _TARGET = {"th": "th", "en": "en", "zh": "zh-CN"}
@@ -13,8 +18,13 @@ _UA = {"User-Agent": "Mozilla/5.0 (SchoolAOD)"}
 _THAI_RE = re.compile(r"[฀-๿]")
 _CJK_RE = re.compile(r"[一-鿿]")
 
+_CACHE_FILE = data_path("translations.json")
+_cache = None
+_cache_lock = threading.Lock()
+
 
 def detect_lang(text: str) -> str:
+	"""เดาภาษาของข้อความ: มีอักษรไทย → th, มีอักษรจีน → zh, นอกนั้น → en"""
 	if _THAI_RE.search(text or ""):
 		return "th"
 	if _CJK_RE.search(text or ""):
@@ -22,9 +32,43 @@ def detect_lang(text: str) -> str:
 	return "en"
 
 
+# ---------------------------------------------------------------- คำแปลที่จำไว้
+def _load_cache():
+	global _cache
+	if _cache is None:
+		try:
+			with open(_CACHE_FILE, "r", encoding="utf-8") as f:
+				_cache = json.load(f)
+		except Exception:
+			_cache = {}
+	return _cache
+
+
+def _cache_key(text, target):
+	return f"{target}␟{text}"
+
+
+def _cache_get(text, target):
+	with _cache_lock:
+		return _load_cache().get(_cache_key(text, target), "")
+
+
+def _cache_put(text, target, result):
+	with _cache_lock:
+		cache = _load_cache()
+		cache[_cache_key(text, target)] = result
+		try:
+			tmp = _CACHE_FILE + ".tmp"
+			with open(tmp, "w", encoding="utf-8") as f:
+				json.dump(cache, f, ensure_ascii=False, indent=0)
+			os.replace(tmp, _CACHE_FILE)
+		except Exception as e:
+			print(f"[Translator] บันทึกคำแปลไม่สำเร็จ: {e}")
+
+
+# ---------------------------------------------------------------- ผู้ให้บริการแปล
 def _get_json(url, timeout=10):
-	req = urllib.request.Request(url, headers=_UA)
-	with urllib.request.urlopen(req, timeout=timeout) as resp:
+	with urlopen(urllib.request.Request(url, headers=_UA), timeout=timeout) as resp:
 		return json.loads(resp.read().decode("utf-8"))
 
 
@@ -59,8 +103,10 @@ def _mymemory(text, source, target):
 _PROVIDERS = [_google_clients5, _google_gtx, _mymemory]
 
 
-def translate(text: str, target_lang: str, source_lang: str = "") -> str:
-	"""แปลข้อความเป็นภาษาเป้าหมาย ('en' / 'zh' / 'th') คืนค่า "" ถ้าแปลไม่สำเร็จ"""
+def translate(text: str, target_lang: str, source_lang: str = "", allow_network: bool = True) -> str:
+	"""แปลข้อความเป็นภาษาเป้าหมาย ('th' / 'en' / 'zh') คืนค่า "" ถ้าแปลไม่สำเร็จ
+	allow_network=False → ใช้เฉพาะคำแปลที่เคยจำไว้ (เร็ว ไม่รอเครือข่าย)
+	"""
 	text = (text or "").strip()
 	if not text or target_lang not in _TARGET:
 		return ""
@@ -68,11 +114,16 @@ def translate(text: str, target_lang: str, source_lang: str = "") -> str:
 	if source_lang == target_lang:
 		return text
 
+	cached = _cache_get(text, target_lang)
+	if cached or not allow_network:
+		return cached
+
 	src, tgt = _TARGET.get(source_lang, "auto"), _TARGET[target_lang]
 	for provider in _PROVIDERS:
 		try:
 			result = provider(text, src, tgt).strip()
 			if result:
+				_cache_put(text, target_lang, result)
 				return result
 		except Exception as e:
 			print(f"[Translator] {provider.__name__} ล้มเหลว: {e}")

@@ -1,17 +1,23 @@
-"""คอมโพเนนต์เลือกภาษาประกาศ: ติ๊กภาษาที่จะอ่าน + จัดลำดับการอ่าน (▲▼) + จำนวนรอบทวน + แปลอัตโนมัติ"""
+"""คอมโพเนนต์เลือกภาษาประกาศ: ติ๊กภาษาที่จะอ่าน + จัดลำดับการอ่าน + จำนวนรอบทวน + แปลอัตโนมัติ
+
+การแปลอัตโนมัติ:
+- ช่องว่าง → แปลจากข้อความภาษาไทย (หรือชื่อคาบ)
+- พิมพ์ภาษาไม่ตรงช่อง (เช่น พิมพ์ไทยในช่องจีน) → แปลเป็นภาษาของช่องทันทีเมื่อพิมพ์เสร็จ
+- พิมพ์ภาษาตรงช่องอยู่แล้ว → ใช้ตามที่พิมพ์ ไม่แปลทับ
+"""
 import threading
 from PySide6.QtWidgets import (
 	QWidget, QFrame, QVBoxLayout, QHBoxLayout, QCheckBox, QLineEdit, QPlainTextEdit,
-	QSpinBox, QPushButton, QLabel
+	QSpinBox, QPushButton, QLabel, QStyle
 )
-from PySide6.QtCore import Qt, Signal, QObject
-from tts_engine import LANG_NAME, LANG_FLAG, normalize_langs
-from translator import translate
+from PySide6.QtCore import Qt, Signal, QObject, QEvent, QSize
+from tts_engine import LANG_NAME, LANG_LABEL, normalize_langs
+from translator import translate, detect_lang
 
 _PLACEHOLDER = {
 	"th": "ข้อความภาษาไทย",
-	"en": "English text (กด 'แปลอัตโนมัติ' เพื่อแปลจากภาษาไทย)",
-	"zh": "中文内容（กด 'แปลอัตโนมัติ' เพื่อแปลจากภาษาไทย）",
+	"en": "ว่างไว้ = แปลจากภาษาไทยให้อัตโนมัติ • พิมพ์ไทยได้ ระบบจะแปลเป็นอังกฤษ",
+	"zh": "ว่างไว้ = แปลจากภาษาไทยให้อัตโนมัติ • พิมพ์ไทยได้ ระบบจะแปลเป็นจีน",
 }
 
 
@@ -21,8 +27,9 @@ class _TranslateBridge(QObject):
 
 class LanguageRow(QFrame):
 	move_requested = Signal(object, int)
+	text_committed = Signal(object)   # พิมพ์เสร็จ (ออกจากช่อง/กด Enter)
 
-	def __init__(self, entry, multiline=False, parent=None):
+	def __init__(self, entry, multiline=False, reorderable=True, parent=None):
 		super().__init__(parent)
 		self.code = entry["code"]
 		self.setProperty("class", "lang-row")
@@ -31,43 +38,58 @@ class LanguageRow(QFrame):
 		row.setContentsMargins(8, 4, 8, 4)
 		row.setSpacing(8)
 
-		self.chk = QCheckBox(f"{LANG_FLAG[self.code]}  {LANG_NAME[self.code]}")
+		self.chk = QCheckBox(LANG_LABEL[self.code])
 		self.chk.setChecked(entry["enabled"])
-		self.chk.setMinimumWidth(110)
+		self.chk.setMinimumWidth(130)
 		self.chk.setCursor(Qt.PointingHandCursor)
 
 		if multiline:
 			self.edit = QPlainTextEdit()
 			self.edit.setFixedHeight(64)
 			self.edit.setPlainText(entry["text"])
+			self.edit.installEventFilter(self)
 		else:
 			self.edit = QLineEdit(entry["text"])
+			self.edit.editingFinished.connect(lambda: self.text_committed.emit(self))
 		self.edit.setPlaceholderText(_PLACEHOLDER[self.code])
 
 		self.spin = QSpinBox()
 		self.spin.setRange(1, 5)
 		self.spin.setValue(entry["repeat"])
-		self.spin.setPrefix("ทวน ")
+		self.spin.setPrefix("อ่าน ")
 		self.spin.setSuffix(" รอบ")
 		self.spin.setToolTip("จำนวนรอบที่จะอ่านภาษานี้ (1 = ไม่ทวน)")
-
-		self.btn_up = QPushButton("▲")
-		self.btn_down = QPushButton("▼")
-		for btn, delta, tip in ((self.btn_up, -1, "ย้ายขึ้น (อ่านก่อน)"), (self.btn_down, 1, "ย้ายลง (อ่านทีหลัง)")):
-			btn.setFixedWidth(34)
-			btn.setToolTip(tip)
-			btn.setCursor(Qt.PointingHandCursor)
-			btn.setProperty("class", "secondary-btn")
-			btn.clicked.connect(lambda _, d=delta: self.move_requested.emit(self, d))
-
-		self.chk.toggled.connect(self._sync_enabled)
 
 		row.addWidget(self.chk)
 		row.addWidget(self.edit, 1)
 		row.addWidget(self.spin)
-		row.addWidget(self.btn_up)
-		row.addWidget(self.btn_down)
+
+		self.btn_up = self.btn_down = None
+		if reorderable:
+			style = self.style()
+			self.btn_up = self._arrow_button(style.standardIcon(QStyle.SP_ArrowUp), "ย้ายขึ้น (อ่านก่อน)", -1)
+			self.btn_down = self._arrow_button(style.standardIcon(QStyle.SP_ArrowDown), "ย้ายลง (อ่านทีหลัง)", 1)
+			row.addWidget(self.btn_up)
+			row.addWidget(self.btn_down)
+
+		self.chk.toggled.connect(self._sync_enabled)
 		self._sync_enabled(self.chk.isChecked())
+
+	def _arrow_button(self, icon, tip, delta):
+		btn = QPushButton()
+		btn.setIcon(icon)
+		btn.setIconSize(QSize(18, 18))
+		btn.setFixedSize(38, 34)
+		btn.setToolTip(tip)
+		btn.setCursor(Qt.PointingHandCursor)
+		btn.setStyleSheet("padding: 2px;")
+		btn.clicked.connect(lambda: self.move_requested.emit(self, delta))
+		return btn
+
+	def eventFilter(self, obj, event):
+		if obj is self.edit and event.type() == QEvent.FocusOut:
+			self.text_committed.emit(self)
+		return super().eventFilter(obj, event)
 
 	def _sync_enabled(self, on):
 		self.edit.setEnabled(on)
@@ -90,12 +112,14 @@ class LanguageSequenceWidget(QWidget):
 	"""รายการภาษาตามลำดับการอ่าน — แถวบนสุดอ่านก่อน"""
 	translation_finished = Signal(bool, str)
 
-	def __init__(self, langs=None, multiline=False, thai_source=None, parent=None):
+	def __init__(self, langs=None, multiline=False, thai_source=None, reorderable=True, parent=None):
 		"""thai_source: ฟังก์ชันคืนข้อความไทยสำรอง (เช่น ชื่อคาบ) เมื่อช่องภาษาไทยว่าง"""
 		super().__init__(parent)
 		self.multiline = multiline
+		self.reorderable = reorderable
 		self.thai_source = thai_source
 		self.rows = []
+		self._busy = False
 
 		self._bridge = _TranslateBridge()
 		self._bridge.done.connect(self._on_translated)
@@ -104,8 +128,12 @@ class LanguageSequenceWidget(QWidget):
 		outer.setContentsMargins(0, 0, 0, 0)
 		outer.setSpacing(4)
 
-		hint = QLabel("ติ๊กภาษาที่ต้องการให้อ่าน • ระบบอ่านจากแถวบนลงล่าง ใช้ ▲▼ สลับลำดับ")
+		hint_text = "ติ๊กภาษาที่ต้องการให้อ่าน • พิมพ์ภาษาไทยลงช่องไหนก็ได้ ระบบแปลเป็นภาษาของช่องนั้นให้เอง"
+		if reorderable:
+			hint_text += " • ระบบอ่านจากแถวบนลงล่าง ใช้ปุ่มลูกศรสลับลำดับ"
+		hint = QLabel(hint_text)
 		hint.setProperty("class", "muted")
+		hint.setWordWrap(True)
 		hint.setStyleSheet("font-size: 12px;")
 		outer.addWidget(hint)
 
@@ -114,9 +142,10 @@ class LanguageSequenceWidget(QWidget):
 		outer.addLayout(self.rows_box)
 
 		tool = QHBoxLayout()
-		self.btn_translate = QPushButton("🌐 แปลอัตโนมัติจากภาษาไทย → English / 中文")
+		self.btn_translate = QPushButton("🌐 แปลอัตโนมัติ (เติมช่องที่ว่าง / แปลงช่องที่พิมพ์ผิดภาษา)")
 		self.btn_translate.setProperty("class", "secondary-btn")
 		self.btn_translate.setCursor(Qt.PointingHandCursor)
+		self.btn_translate.setToolTip("ช่องที่พิมพ์ถูกภาษาอยู่แล้วจะไม่ถูกแปลทับ • ลบข้อความในช่องออกถ้าต้องการให้แปลใหม่")
 		self.btn_translate.clicked.connect(self.translate_from_thai)
 		self.lbl_status = QLabel("")
 		self.lbl_status.setProperty("class", "muted")
@@ -134,8 +163,9 @@ class LanguageSequenceWidget(QWidget):
 			row.deleteLater()
 		self.rows = []
 		for entry in normalize_langs(langs):
-			row = LanguageRow(entry, self.multiline)
+			row = LanguageRow(entry, self.multiline, self.reorderable)
 			row.move_requested.connect(self._move_row)
+			row.text_committed.connect(self._on_row_committed)
 			self.rows.append(row)
 			self.rows_box.addWidget(row)
 		self._refresh_arrows()
@@ -158,6 +188,19 @@ class LanguageSequenceWidget(QWidget):
 			text = (self.thai_source() or "").strip()
 		return text
 
+	def is_busy(self):
+		return self._busy
+
+	def needs_translation(self):
+		"""มีภาษาที่ติ๊กไว้แต่ยังว่าง หรือพิมพ์ไม่ตรงภาษาของช่อง"""
+		for row in self.rows:
+			e = row.entry()
+			if not e["enabled"]:
+				continue
+			if (not e["text"] and e["code"] != "th") or (e["text"] and detect_lang(e["text"]) != e["code"]):
+				return True
+		return False
+
 	# ---- จัดลำดับ ----
 	def _move_row(self, row, delta):
 		idx = self.rows.index(row)
@@ -173,22 +216,46 @@ class LanguageSequenceWidget(QWidget):
 
 	def _refresh_arrows(self):
 		for i, row in enumerate(self.rows):
-			row.btn_up.setEnabled(i > 0)
-			row.btn_down.setEnabled(i < len(self.rows) - 1)
+			if row.btn_up:
+				row.btn_up.setEnabled(i > 0)
+				row.btn_down.setEnabled(i < len(self.rows) - 1)
 
 	# ---- แปลภาษา ----
+	def _on_row_committed(self, row):
+		"""พิมพ์เสร็จในช่องใด แล้วภาษาไม่ตรงกับช่อง → แปลเฉพาะช่องนั้นให้ทันที"""
+		text = row.text().strip()
+		if text and detect_lang(text) != row.code and not self._busy:
+			self._start_translation({row.code: text})
+
 	def translate_from_thai(self):
+		"""เติมช่องที่ว่าง (แปลจากภาษาไทย) และแปลงช่องที่พิมพ์ผิดภาษา — ช่องที่ถูกภาษาอยู่แล้วไม่แตะ"""
 		source = self.thai_text()
-		if not source:
-			self.lbl_status.setText("⚠️ กรุณาพิมพ์ข้อความภาษาไทยก่อน")
+		jobs = {}
+		for row in self.rows:
+			e = row.entry()
+			if not e["enabled"]:
+				continue
+			if e["text"]:
+				if detect_lang(e["text"]) != e["code"]:
+					jobs[e["code"]] = e["text"]
+			elif e["code"] != "th" and source:
+				jobs[e["code"]] = source
+		if not jobs:
+			self.lbl_status.setText("✅ ทุกภาษาที่เลือกพร้อมแล้ว" if source else "⚠️ กรุณาพิมพ์ข้อความภาษาไทยก่อน")
+			self.translation_finished.emit(bool(source), "" if source else "ไม่มีข้อความ")
 			return
+		self._start_translation(jobs)
+
+	def _start_translation(self, jobs):
+		"""jobs: {รหัสภาษาปลายทาง: ข้อความต้นฉบับ}"""
+		self._busy = True
 		self.btn_translate.setEnabled(False)
 		self.lbl_status.setText("⏳ กำลังแปล...")
 
 		def worker():
 			results, errors = {}, []
-			for code in ("en", "zh"):
-				out = translate(source, code, "th")
+			for code, text in jobs.items():
+				out = translate(text, code)
 				if out:
 					results[code] = out
 				else:
@@ -203,7 +270,9 @@ class LanguageSequenceWidget(QWidget):
 			row = self.row_for(code)
 			if row:
 				row.set_text(text)
+		self._busy = False
 		self.btn_translate.setEnabled(True)
 		ok = bool(results) and not error
-		self.lbl_status.setText("✅ แปลเรียบร้อย (แก้ไขคำแปลได้)" if ok else f"⚠️ {error}")
+		names = ", ".join(LANG_NAME[c] for c in results)
+		self.lbl_status.setText(f"✅ แปลเป็น {names} แล้ว (แก้ไขคำแปลได้)" if ok else f"⚠️ {error}")
 		self.translation_finished.emit(ok, error)

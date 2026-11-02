@@ -13,7 +13,7 @@ from PySide6.QtCore import Qt, QTimer, QUrl, QPropertyAnimation, QEasingCurve, Q
 from PySide6.QtGui import QGuiApplication, QDesktopServices, QIcon, QAction
 from ui.themes import get_stylesheet, normalize_theme_key, THEME_ORDER, BUTTON_COLORS
 from ui.components import AnimatedToggle, ToastNotification
-from ui.schedule_dialog import ScheduleFormDialog
+from ui.schedule_dialog import ScheduleFormDialog, LanguageEditDialog
 from ui.language_widget import LanguageSequenceWidget
 from sound_db import SoundDatabase
 from config_manager import load_config, save_config
@@ -145,7 +145,7 @@ class BellTriggerDialog(QDialog):
 
 
 class UpdateDialog(QDialog):
-	"""แจ้งเวอร์ชันใหม่ + รายละเอียดการเปลี่ยนแปลง ให้ผู้ใช้เลือก อัปเดต / ภายหลัง / ข้ามเวอร์ชันนี้"""
+	"""แจ้งเวอร์ชันใหม่ + รายละเอียดการเปลี่ยนแปลง ให้ผู้ใช้เลือก อัปเดตเลย / อัปเดตทีหลัง"""
 
 	def __init__(self, info, self_update, parent=None):
 		super().__init__(parent)
@@ -179,8 +179,7 @@ class UpdateDialog(QDialog):
 
 		row = QHBoxLayout()
 		for text, choice, color in (
-			("⏭️ ข้ามเวอร์ชันนี้", "skip", BUTTON_COLORS["no"]),
-			("ภายหลัง", "later", BUTTON_COLORS["cancel"]),
+			("⏰ อัปเดตทีหลัง", "later", BUTTON_COLORS["cancel"]),
 			("⬇️ อัปเดตเลย", "update", BUTTON_COLORS["yes"]),
 		):
 			btn = QPushButton(text)
@@ -320,9 +319,12 @@ class MainWindow(QMainWindow):
 		self._cache_retry_timer.timeout.connect(self._retry_precache_if_incomplete)
 		self._cache_retry_timer.start(15 * 60 * 1000)
 
-		# ตรวจสอบเวอร์ชันใหม่อัตโนมัติหลังเปิดโปรแกรม
-		if self.config.get("auto_check_update", True):
-			QTimer.singleShot(8000, lambda: self.check_for_updates(manual=False))
+		# ตรวจสอบเวอร์ชันใหม่อัตโนมัติหลังเปิดโปรแกรม และทุก 6 ชม. (โปรแกรมเปิดค้างทั้งวัน)
+		self._prompted_versions = set()
+		self._update_check_timer = QTimer(self)
+		self._update_check_timer.timeout.connect(self._auto_check_updates)
+		self._update_check_timer.start(6 * 60 * 60 * 1000)
+		QTimer.singleShot(8000, self._auto_check_updates)
 
 	def on_public_url_ready(self, public_url):
 		self.public_url = public_url
@@ -372,6 +374,19 @@ class MainWindow(QMainWindow):
 		row.setSpacing(6)
 		self.theme_group = QButtonGroup(self)
 		self.theme_group.setExclusive(True)
+
+		# กระดิ่งแจ้งเตือนเวอร์ชันใหม่ — แสดงเฉพาะตอนมีอัปเดตที่ยังไม่ได้ติดตั้ง
+		self.btn_update_badge = QPushButton("🔔 มีอัปเดตใหม่")
+		self.btn_update_badge.setCursor(Qt.PointingHandCursor)
+		self.btn_update_badge.setToolTip("มีเวอร์ชันใหม่ กดเพื่อดูรายละเอียดและอัปเดต")
+		self.btn_update_badge.setStyleSheet(
+			"QPushButton { background: #F59E0B; color: #1F2937; font-weight: bold; font-size: 13px;"
+			" border-radius: 8px; padding: 6px 14px; border: 1px solid #FBBF24; }"
+			"QPushButton:hover { background: #FBBF24; }")
+		self.btn_update_badge.clicked.connect(self.on_update_button)
+		self.btn_update_badge.hide()
+		row.addWidget(self.btn_update_badge)
+		row.addSpacing(8)
 
 		for key, name in THEME_ORDER:
 			btn = QPushButton(name)
@@ -711,11 +726,14 @@ class MainWindow(QMainWindow):
 			toggle_enabled.state_changed.connect(lambda checked, idx=row: self.toggle_enabled_realtime(idx, checked))
 			self.table.setCellWidget(row, 6, self._wrap_toggle(toggle_enabled))
 
-			lang_item = QTableWidgetItem(langs_summary(item.get("langs")))
-			lang_item.setFlags(lang_item.flags() & ~Qt.ItemIsEditable)
-			lang_item.setTextAlignment(Qt.AlignCenter)
-			lang_item.setToolTip("แก้ภาษาและลำดับการอ่านได้ที่ปุ่ม ✏️")
-			self.table.setItem(row, 7, lang_item)
+			# คอลัมน์ภาษา: กดเพื่อเลือกภาษา / สลับลำดับ / จำนวนรอบ ของรายการนี้ได้ทันที
+			btn_lang = QPushButton(f"🌐 {langs_summary(item.get('langs'))}")
+			btn_lang.setProperty("class", "secondary-btn")
+			btn_lang.setCursor(Qt.PointingHandCursor)
+			btn_lang.setToolTip("กดเพื่อเลือกภาษาที่จะพูด สลับลำดับ และจำนวนรอบที่อ่าน")
+			btn_lang.setStyleSheet("padding: 6px 12px; font-size: 13px;")
+			btn_lang.clicked.connect(lambda _, idx=row: self.edit_schedule_languages(idx))
+			self.table.setCellWidget(row, 7, btn_lang)
 
 			btn_box = QHBoxLayout()
 			
@@ -821,6 +839,18 @@ class MainWindow(QMainWindow):
 
 	def _preview_dialog_item(self, data):
 		self.audio.play_schedule_item(data, label=f"ทดลองฟัง ({data.get('label')})")
+
+	def edit_schedule_languages(self, index):
+		if not (0 <= index < len(self.scheduler.schedules)):
+			return
+		item = self.scheduler.schedules[index]
+		dialog = LanguageEditDialog(item, parent=self, preview_callback=self._preview_dialog_item)
+		if dialog.exec() == QDialog.Accepted:
+			updated = dialog.get_item()
+			item["langs"] = updated["langs"]
+			item["voice_style"] = updated["voice_style"]
+			self.scheduler.save_schedules()
+			self.refresh_schedule_table()
 
 	def add_schedule_dialog(self):
 		try:
@@ -968,7 +998,7 @@ class MainWindow(QMainWindow):
 
 		box = QGroupBox("🌐 ข้อความประกาศ & ลำดับภาษา")
 		box_layout = QVBoxLayout(box)
-		self.announce_langs = LanguageSequenceWidget(default_langs(), multiline=True)
+		self.announce_langs = LanguageSequenceWidget(default_langs(), multiline=True, reorderable=False)
 		box_layout.addWidget(self.announce_langs)
 		layout.addWidget(box, 1)
 
@@ -1295,6 +1325,10 @@ class MainWindow(QMainWindow):
 		else:
 			self.check_for_updates(manual=True)
 
+	def _auto_check_updates(self):
+		if self.config.get("auto_check_update", True):
+			self.check_for_updates(manual=False)
+
 	def check_for_updates(self, manual=False):
 		self._update_manual = manual
 		if manual:
@@ -1302,10 +1336,26 @@ class MainWindow(QMainWindow):
 			self.lbl_update_status.setText("⏳ กำลังตรวจสอบเวอร์ชันล่าสุด...")
 		self.updater.check_async()
 
+	def _set_update_available(self, info):
+		"""แสดง/ซ่อนกระดิ่งแจ้งเตือน: มีเฉพาะตอนมีเวอร์ชันใหม่ที่ยังไม่ได้อัปเดต"""
+		if info and info.get("is_newer"):
+			text = f"🔔 มีอัปเดตใหม่ v{info['version']}"
+			self.btn_update_badge.setText(text)
+			self.btn_update_badge.show()
+			self.btn_update.setText(f"🔔 อัปเดตเป็น v{info['version']}")
+			self.lbl_update_status.setText(f"🔔 มีเวอร์ชันใหม่ v{info['version']} — กดเพื่ออัปเดต")
+			self.tray_icon.setToolTip(f"School AOD v{APP_VERSION} — มีอัปเดต v{info['version']}")
+		else:
+			self.btn_update_badge.hide()
+			self.btn_update.setText(f"✅ เวอร์ชันล่าสุด v{APP_VERSION}")
+			self.lbl_update_status.setText(f"✅ คุณใช้เวอร์ชันล่าสุดแล้ว (v{APP_VERSION})")
+			self.tray_icon.setToolTip(f"School AOD v{APP_VERSION}")
+
 	def on_update_checked(self, info, error):
 		manual = self._update_manual
 		if error or not info:
-			self.btn_update.setText("🔄 ตรวจสอบอัปเดต")
+			if not (self._latest_release and self._latest_release.get("is_newer")):
+				self.btn_update.setText("🔄 ตรวจสอบอัปเดต")
 			self.lbl_update_status.setText("⚠️ ตรวจสอบไม่สำเร็จ (ตรวจสอบอินเทอร์เน็ต)")
 			if manual:
 				styled_message(self, "ตรวจสอบอัปเดตไม่สำเร็จ",
@@ -1314,27 +1364,30 @@ class MainWindow(QMainWindow):
 			return
 
 		self._latest_release = info
+		self._set_update_available(info)
+
 		if not info["is_newer"]:
-			self.btn_update.setText("🔄 ตรวจสอบอัปเดต")
-			self.lbl_update_status.setText(f"✅ ใช้เวอร์ชันล่าสุดแล้ว (v{APP_VERSION})")
 			if manual:
-				styled_message(self, "ไม่มีอัปเดต", f"คุณใช้เวอร์ชันล่าสุดแล้ว (v{APP_VERSION}) 🎉",
+				styled_message(self, "เป็นเวอร์ชันล่าสุดแล้ว",
+							   f"✅ คุณใช้เวอร์ชันล่าสุดแล้ว (v{APP_VERSION})\nไม่มีอัปเดตใหม่ในตอนนี้",
 							   QMessageBox.Ok, icon=QMessageBox.Information)
 			return
 
-		self.btn_update.setText(f"🆕 อัปเดตเป็น v{info['version']}")
-		self.lbl_update_status.setText(f"🆕 มีเวอร์ชันใหม่ v{info['version']}")
-		if manual or info["version"] != self.config.get("skip_version", ""):
+		if manual:
 			self.show_update_dialog(info)
+		elif info["version"] not in self._prompted_versions:
+			# ตรวจอัตโนมัติ: แจ้งครั้งเดียวต่อเวอร์ชัน (กดทีหลังแล้ว กระดิ่งยังค้างไว้ให้กดได้ตลอด)
+			self._prompted_versions.add(info["version"])
+			self.tray_icon.showMessage("🔔 มีเวอร์ชันใหม่ของ School AOD",
+									   f"v{info['version']} พร้อมให้อัปเดตแล้ว", QSystemTrayIcon.Information, 6000)
+			if self.isVisible():
+				self.show_update_dialog(info)
 
 	def show_update_dialog(self, info):
 		self.show_window()
 		dialog = UpdateDialog(info, can_self_update(), self)
 		dialog.exec()
-		if dialog.choice == "skip":
-			self.config["skip_version"] = info["version"]
-			save_config(self.config)
-		elif dialog.choice == "update":
+		if dialog.choice == "update":
 			if can_self_update() and info.get("asset_url"):
 				self._update_progress = QProgressDialog("⬇️ กำลังดาวน์โหลดเวอร์ชันใหม่...", None, 0, 100, self)
 				self._update_progress.setWindowTitle(f"อัปเดตเป็น v{info['version']}")

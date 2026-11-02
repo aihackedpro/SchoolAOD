@@ -6,8 +6,7 @@ from PySide6.QtCore import QUrl, QObject, Signal, QTimer
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QAudioSink, QAudioFormat
 from paths import data_path
 from config_manager import load_config
-from tts_engine import TTSEngine, build_segments, normalize_langs, default_langs, LANG_NAME
-from translator import translate
+from tts_engine import TTSEngine, build_segments, prepare_langs, default_langs, LANG_NAME
 
 
 def parse_item_time(item):
@@ -160,8 +159,7 @@ class AudioEngine(QObject):
 		now = datetime.now()
 		hour = spec.get("hour", now.hour)
 		minute = spec.get("minute", now.minute)
-		langs = normalize_langs(spec.get("langs"))
-		self._fill_missing_translations(langs, spec.get("label", ""))
+		langs = prepare_langs(spec.get("langs"), spec.get("label", ""))
 
 		segments = build_segments(
 			langs,
@@ -186,28 +184,19 @@ class AudioEngine(QObject):
 
 		self._chain_ready.emit(files, label)
 
-	def _fill_missing_translations(self, langs, label):
-		"""ภาษาที่เปิดใช้แต่ยังไม่มีคำแปล → แปลจากข้อความไทยให้ทันที (ต้องมีอินเทอร์เน็ต)"""
-		th_entry = next((e for e in langs if e["code"] == "th"), None)
-		source = ((th_entry or {}).get("text") or "").strip() or (label or "").strip()
-		if not source:
-			return
-		for entry in langs:
-			if entry["enabled"] and entry["code"] != "th" and not entry["text"].strip():
-				entry["text"] = translate(source, entry["code"])
-
 	def _on_chain_ready(self, files, label):
 		self.play_sequence(files, label=label)
 
 	# ---------------------------------------------------------------- เตรียมเสียงล่วงหน้า (ใช้ออฟไลน์)
-	def _schedule_jobs(self, schedules):
+	def _schedule_jobs(self, schedules, allow_network=False):
 		jobs, seen = [], set()
 		for item in schedules or []:
 			if not item.get("enabled", True):
 				continue
 			spec = self.spec_from_item(item)
+			langs = prepare_langs(spec["langs"], spec["label"], allow_network=allow_network)
 			segments = build_segments(
-				spec["langs"], label=spec["label"], hour=spec["hour"], minute=spec["minute"],
+				langs, label=spec["label"], hour=spec["hour"], minute=spec["minute"],
 				include_time=spec["voice_announce"], include_text=spec["speak_text"],
 			)
 			for text, lang in segments:
@@ -236,7 +225,7 @@ class AudioEngine(QObject):
 
 	def _precache_worker(self, schedules):
 		while True:
-			jobs = self._schedule_jobs(schedules)
+			jobs = self._schedule_jobs(schedules, allow_network=True)
 			ok = 0
 			for i, (text, lang, style) in enumerate(jobs, start=1):
 				needs_network = not self.tts.has_ai_voice(text, lang, style)
